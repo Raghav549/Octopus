@@ -1,0 +1,19 @@
+# Pinned llama.cpp dependency (see ARCHITECTURE_SPEC.md item 2)
+#
+# Upstream: https://github.com/ggml-org/llama.cpp
+# Tag:      b11371
+# Commit:   99b95488cac0f00ce3f05af113a8c1e287753f87
+# Obtained: git clone --depth 1 --branch b11371 (2026-10-03, from this container)
+#
+# The checkout is NOT vendored into git (see .gitignore): it is ~large and is only
+# needed for (a) the vocabulary/reference fixtures under models/ used by the
+# tokenizer tests and (b) the optional OCT_WITH_LLAMA backend.
+#
+# Reproduce the checkout:
+#   git clone --depth 1 --branch b11371 https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+#
+# Status in this snapshot: the shared library build completed, the static build
+# did not, so OCT_WITH_LLAMA was configured OFF.  The llama.cpp-dependent code path
+# in src/host/llama_host.cpp is compiled only when OCT_HAVE_LLAMA is defined and has
+# never been executed here.  tests/run_tests.py and bench/bench.py skip
+# fixture-dependent cases with a printed reason when this directory is absent.

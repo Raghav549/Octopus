@@ -78,6 +78,10 @@ class Reader {
 public:
     explicit Reader(std::string_view s) : s_(s) {}
 
+    // Number of bytes consumed by the last parse() call (used to iterate over
+    // several top-level forms).
+    size_t position() const { return i_; }
+
     ValuePtr parse() {
         skip();
         if (i_ >= s_.size()) throw OctError("lisp: unexpected end of input");
@@ -214,9 +218,35 @@ ValuePtr Interp::lookup(const std::string& name) const {
 }
 
 Outcome<ValuePtr> Interp::eval_string(std::string_view src) {
-    auto v = read(src);
-    if (!v) return v.status;
-    return eval(*v);
+    // A source string may hold several top-level forms (a script); each is
+    // evaluated in order and the value of the last one is returned. A single
+    // form behaves exactly as before. Errors stop evaluation and propagate.
+    ValuePtr last;
+    std::string_view rest = src;
+    bool evaluated_any = false;
+    for (;;) {
+        // Skip whitespace between forms.
+        size_t i = 0;
+        while (i < rest.size() && std::isspace(static_cast<unsigned char>(rest[i]))) ++i;
+        rest.remove_prefix(i);
+        if (rest.empty()) break;
+        Reader reader(rest);
+        ValuePtr form;
+        try {
+            form = reader.parse();
+        } catch (const std::exception& e) {
+            return Status::invalid(e.what());
+        }
+        auto value = eval(form);
+        if (!value) return value.status;
+        last = *value;
+        evaluated_any = true;
+        const size_t consumed = reader.position();
+        if (consumed == 0) break;                 // defensive: no progress
+        rest.remove_prefix(std::min(consumed, rest.size()));
+    }
+    if (!evaluated_any) return Status::invalid("lisp: no forms in input");
+    return last;
 }
 
 Outcome<ValuePtr> Interp::eval(ValuePtr expr) { return eval_in(std::move(expr), global_, 0); }

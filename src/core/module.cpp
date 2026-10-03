@@ -10,6 +10,7 @@
 #include "octopus/occam.hpp"
 #include "octopus/piet.hpp"
 #include "octopus/prolog.hpp"
+#include "octopus/router.hpp"
 #include "octopus/smalltalk.hpp"
 #include "octopus/stackvm.hpp"
 #include "octopus/supervisor.hpp"
@@ -75,6 +76,7 @@ size_t register_builtin_modules(Registry& registry) {
         ++n;
     };
     add(std::make_shared<NumericsModule>());
+    add(router::make_router_module());
     add(apl::make_apl_module());
     add(prolog::make_prolog_module());
     add(lisp::make_lisp_module());

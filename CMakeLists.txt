@@ -31,6 +31,7 @@ set(OCT_CXX_SOURCES
   src/core/registry.cpp
   src/core/audit.cpp
   src/core/module.cpp
+  src/core/router.cpp
   src/numerics/numerics.cpp
   src/numerics/kernel_util.cpp
   src/numerics/kernel_sod1d.cpp

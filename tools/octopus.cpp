@@ -14,6 +14,7 @@
 #include "octopus/numerics.hpp"
 #include "octopus/piet.hpp"
 #include "octopus/prolog.hpp"
+#include "octopus/router.hpp"
 #include "octopus/stackvm.hpp"
 #include "octopus/supervisor.hpp"
 #include "octopus/tokenizer.hpp"
@@ -500,6 +501,36 @@ int cmd_piet(const std::vector<std::string>& args) {
     return 0;
 }
 
+int cmd_ask(const std::vector<std::string>& args) {
+    const auto flags = parse_flags(args);
+    std::string request;
+    for (const auto& a : args) {
+        if (a.rfind("--", 0) != 0) { request = a; break; }
+    }
+    // The flag parser eats the value after a flag, so a request that follows a
+    // flag directly still works; a request containing spaces must be quoted.
+    if (request.empty()) {
+        fail(Status::invalid(
+            "usage: octopus ask \"<request>\" [--model M.gguf] [--allow-stub] [--out F]"));
+        return 0;
+    }
+    if (flags.count("model")) request += " model=" + flags.at("model");
+    if (flags.count("out")) request += " out=" + flags.at("out");
+    if (flags.count("allow-stub")) request += " stub=true";
+    router::Router r;
+    router::RouterOptions opts;
+    if (flags.count("model")) opts.model_path = flags.at("model");
+    if (flags.count("out")) opts.output_path = flags.at("out");
+    opts.allow_stub = flags.count("allow-stub") != 0;
+    auto out = r.execute(request, opts);
+    if (!out) {
+        fail(out.status);
+        return 0;
+    }
+    print_json(*out);
+    return 0;
+}
+
 int cmd_supervise(bool json) {
     supervisor::Supervisor sup;
     sup.add_check(supervisor::Check{"kernels.validate", [] {
@@ -577,6 +608,7 @@ int main(int argc, char** argv) {
             << "  llm [--model m.gguf [--prompt 'p' [--max-tokens N] [--allow-stub]]]\n"
             << "  guard encode|decode|fuzz --key K --in F [--out F] [--trials N]\n"
             << "  piet --in state.txt --out state.png [--width W --height H]\n"
+            << "  ask \"<request>\"         route a request to the owning module and run it\n"
             << "  supervise [--json]          run health checks and print the report\n";
         return 0;
     }
@@ -596,6 +628,7 @@ int main(int argc, char** argv) {
     if (cmd == "guard") return cmd_guard(args_from(argc, argv, 2));
     if (cmd == "piet") return cmd_piet(args_from(argc, argv, 2));
     if (cmd == "supervise") return cmd_supervise(json);
+    if (cmd == "ask") return cmd_ask(args_from(argc, argv, 2));
     fail(Status::invalid("unknown command: " + cmd + " (try --help)"));
     return g_exit;
 }

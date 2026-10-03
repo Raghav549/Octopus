@@ -30,8 +30,8 @@ OCT_TEST(engine, sha256_and_fnv_match_published_reference_vectors) {
 OCT_TEST(engine, registry_exposes_every_builtin_module) {
     Registry reg;
     const size_t n = register_builtin_modules(reg);
-    OCT_EQ(n, size_t(12));
-    OCT_EQ(reg.size(), size_t(12));
+    OCT_EQ(n, size_t(13));                 // 8 numeric/kernel + language DNA + router
+    OCT_EQ(reg.size(), size_t(13));
 
     OCT_CHECK(reg.resolve("numeric.kernel.heat2d") != nullptr);
     OCT_CHECK(reg.resolve("numeric.kernel.sod1d") != nullptr);
@@ -43,6 +43,10 @@ OCT_TEST(engine, registry_exposes_every_builtin_module) {
     OCT_CHECK(reg.resolve("apl.arrays") == nullptr);
     OCT_CHECK(reg.resolve("no.such.capability") == nullptr);
 
+    // The router is a module like any other and advertises its capabilities.
+    OCT_CHECK(reg.resolve("route.classify") != nullptr);
+    OCT_CHECK(reg.resolve("route.dispatch") != nullptr);
+
     // dispatch() falls back to progressively shorter prefixes.
     Capability matched;
     auto m = reg.dispatch("numeric.kernel.heat2d.units", &matched);
@@ -50,7 +54,7 @@ OCT_TEST(engine, registry_exposes_every_builtin_module) {
     if (m) OCT_CHECK(matched == "numeric.kernel.heat2d");
 
     const auto inv = reg.inventory();
-    OCT_EQ(inv.size(), size_t(12));
+    OCT_EQ(inv.size(), size_t(13));
     for (const auto& i : inv) {
         OCT_CHECK(!i.name.empty());
         OCT_CHECK(!i.version.empty());
@@ -65,7 +69,7 @@ OCT_TEST(engine, every_builtin_module_self_check_executes_and_passes) {
     Registry reg;
     register_builtin_modules(reg);
     const auto results = reg.self_check_all();
-    OCT_EQ(results.size(), size_t(12));
+    OCT_EQ(results.size(), size_t(13));
     for (const auto& r : results) {
         OCT_NOTE(r.module << " -> " << (r.status.is_ok() ? "ok" : r.status.message));
         OCT_CHECK_MSG(r.status.is_ok(), r.module << ": " << r.status.message);

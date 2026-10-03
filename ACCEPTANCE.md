@@ -7,7 +7,7 @@ compiler, no model weights, no network). Reproduce with:
 ```sh
 # default build: no llama.cpp linked, no Fortran compiler
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-python3 tests/run_tests.py --no-build          # 51 passed, 0 failed, 4 skipped
+python3 tests/run_tests.py --no-build          # 55 passed, 0 failed, 5 skipped
 python3 bench/bench.py --no-build --repeats 3  # bench/results/{raw.csv,summary.md}
 ./build/octopus selftest                       # 12/12 modules, each assertion executed
 
@@ -15,7 +15,7 @@ python3 bench/bench.py --no-build --repeats 3  # bench/results/{raw.csv,summary.
 cmake -B build-llama -S . -DCMAKE_BUILD_TYPE=Release -DOCT_WITH_LLAMA=ON \
       -DOCT_LLAMA_PREBUILT_DIR=$PWD/third_party/llama.cpp/build-static
 cmake --build build-llama -j
-./build-llama/oct_tests                        # 55 passed, 0 failed, 1 skipped, 1194 assertions
+./build-llama/oct_tests                        # 59 passed, 0 failed, 1 skipped, 1308 assertions
 ./build-llama/slmgen /tmp/tiny.gguf            # synthetic-weight model (offline)
 ./build-llama/octopus llm --model /tmp/tiny.gguf --prompt 'hello' --max-tokens 8 --json
 ```
@@ -24,10 +24,10 @@ Measured suite results at this snapshot:
 
 | build | result | skips |
 |---|---|---|
-| default (`OCT_WITH_LLAMA=OFF`) | **51 passed, 0 failed, 1165 assertions** | 4: 3 llama.cpp tests (backend not linked) + 1 Fortran |
-| inference (`OCT_WITH_LLAMA=ON`) | **55 passed, 0 failed, 1194 assertions** | 1: Fortran |
+| default (`OCT_WITH_LLAMA=OFF`) | **55 passed, 0 failed, 1279 assertions** | 5: 4 llama.cpp tests (backend not linked) + 1 Fortran |
+| inference (`OCT_WITH_LLAMA=ON`) | **59 passed, 0 failed, 1308 assertions** | 1: Fortran |
 
-`octopus selftest` reports **12/12 module self-checks pass** in both builds. Every skip
+`octopus selftest` reports **13/13 module self-checks pass** in both builds. Every skip
 prints its reason, and `run_tests.py --strict` converts skips into failures.
 
 ## The 14 required test categories
@@ -45,7 +45,7 @@ prints its reason, and `run_tests.py --strict` converts skips into failures.
 | 9 | concurrency/race tests | Occam channels/par_map under repetition and FIFO order; actor fault containment/restart over 8 repetitions | **PASS** |
 | 10 | sandbox/security tests | capability registry: every advertised capability resolves to the module that lists it; a deliberately failing module is reported as failing; guardrail self-check proves tamper rejection and that the module documents "NOT a cipher" | **PASS** |
 | 11 | fuzz tests for parsers/DSLs | fixed malformed-input corpus through the APL, Prolog, LISP and stack-VM parsers (no crash, errors returned as statuses); 384 single-bit guardrail mutations, **0 accepted** | **PASS** |
-| 12 | end-to-end offline tests | `integration.offline_end_to_end_chain`: APL → Prolog → Occam → Piet → supervisor → audit chain, no network, no model | **PASS** |
+| 12 | end-to-end offline tests | `integration.offline_end_to_end_chain`: APL → Prolog → Occam → Piet → supervisor → audit chain, no network, no model; plus `router.*`: one entry point dispatching to all eight layers through the capability registry, and failing closed when a layer cannot serve | **PASS** |
 | 13 | memory-budget tests | bounded stack-VM memory (out-of-range access faults instead of growing), bounded rendering grid for oversized input | **PASS (qualitative)** |
 | 14 | benchmark harness | `tools/octbench` + `bench/bench.py`: fixed inputs, build/host fingerprint, min/median/max over repeats, result fingerprints; artifacts in `bench/results/` | **PASS** |
 
@@ -129,6 +129,30 @@ snapshot, which is the point of the exercise:
 * Apple Silicon UMA / edge FPGA paths: **not implemented or tested** (no such hardware).
 * Long-run stability beyond the tested windows (cavity to Re=800, Kepler over 4096 steps,
   N-body to t=2) is not claimed.
+
+## Router evidence
+
+`octopus ask "<request>"` is the single entry point. Measured behaviour at this snapshot:
+
+```
+$ ./build/octopus ask "apl: +/ ⍳ 11"
+{"route_kind":"array","route_module":"apl.arrays","route_reason":"explicit prefix 'apl:'",
+ "route_confidence":1,"result_shape":"f64[]","elements":1,"values":[55],"fingerprint":"8f4a876…"}
+$ ./build/octopus ask "occam: sum n=100000"
+{"route_kind":"parallel",…,"value":4999950000,"agreed":true,"spread":0,"winner":"closed_form"}
+$ ./build/octopus ask "what is the heat equation?"
+{"route_kind":"numeric","route_capability":"numeric.kernel.heat2d",
+ "route_reason":"matched kernel keyword 'heat'","route_confidence":0.7, …}
+$ ./build/octopus ask "llm: write me a poem"
+{"status":"unavailable","message":"router: this request needs a language model; pass model=<path.gguf>
+ (no answer is fabricated without one)"}
+$ ./build/octopus ask "zzzzz qqqqq"
+{"status":"rejected","message":"router: no rule matched; refusing to guess which module should serve this"}
+```
+
+Three independent strategies (closed form, direct loop, APL reduce) agree on the parallel
+sum in 0 spread; an unclassifiable request and a language request without a model both fail
+closed.
 
 ## Verdict
 

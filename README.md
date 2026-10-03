@@ -41,6 +41,8 @@ reference implementation, and says so in every result (`backend` field) and in
 python3 tests/run_tests.py               # build + tests + coverage matrix
 python3 bench/bench.py                   # reproducible benchmark -> bench/results/
 
+./build/octopus ask "apl: +/ ⍳ 100"       # route a request to the owning module
+./build/octopus ask "kernel:kepler e=0.3"
 ./build/octopus version                  # engine + host + backend status (JSON)
 ./build/octopus doctor                   # what can and cannot run here
 ./build/octopus selftest                 # every module's executed self-check
@@ -62,6 +64,7 @@ python3 bench/bench.py                   # reproducible benchmark -> bench/resul
 
 | Layer | Source | Contract |
 |---|---|---|
+| Capability router | `src/core/router.cpp` | classifies a request as numeric / array / logic / symbolic / stack / guard / visual / parallel / language and dispatches it; an explicit prefix is treated as a declaration, a heuristic guess states its evidence and its confidence, and an unclassifiable request is refused |
 | Physics/maths kernels | `src/numerics/` | 8 validated kernels (shock tube, heat, Poisson, cavity, gravity, thermodynamics, linear solve); every result carries method, backend, residuals, measured order and a SHA-256 fingerprint |
 | Tokenizer | `src/tokenizer/` | byte-level BPE read from the GGUF itself; **exact** match to the upstream GPT-2 fixture (46/46 cases, 473/473 tokens) |
 | APL-style array IR | `src/apl/` | right-to-left evaluation, reshape/transpose/reduce/scan, inner & outer products, solve; lossless token-stream codec |
@@ -87,6 +90,9 @@ python3 bench/bench.py                   # reproducible benchmark -> bench/resul
   determined attacker.
 * **Facts come from files.** Model metadata is read from GGUF key/values, never guessed
   from a file name or a parameter count.
+* **Routing states its evidence.** `octopus ask` echoes the route it took (`route_kind`,
+  `route_module`, `route_reason`, `route_confidence`) next to the answer, so a caller can
+  see why a given module produced it.
 
 ## Repository layout
 

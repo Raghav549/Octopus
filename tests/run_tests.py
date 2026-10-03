@@ -38,7 +38,8 @@ CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("9 concurrency/race tests", "Occam threads and actor messaging", ["layers.occam", "integration.concurrency"]),
     ("10 sandbox/security tests", "capability boundaries and fail-closed behaviour", ["integration.security", "layers.intercal"]),
     ("11 fuzz tests for parsers/DSLs", "malformed input across all parsers", ["integration.parsers_reject", "integration.guard_fuzz"]),
-    ("12 end-to-end offline tests", "APL->Prolog->Occam->Piet->supervisor chain", ["integration.offline_end_to_end"]),
+    ("12 end-to-end offline tests", "router dispatch across layers + APL->Prolog->Occam->Piet chain",
+     ["integration.offline_end_to_end", "router."]),
     ("13 memory-budget tests", "bounded VM memory and bounded rendering", ["integration.memory_use"]),
     ("14 benchmark harnesses", "tools/octbench + bench/bench.py", []),
 ]

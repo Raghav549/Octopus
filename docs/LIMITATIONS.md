@@ -127,6 +127,20 @@ comment only.
 * Fuzz coverage is bounded: 256–384 single-bit mutations per guardrail test, and a fixed
   list of malformed inputs for the parsers. This is a smoke-level fuzz, not exhaustive.
 
+## Routing
+
+* `Router::classify` is **rule-based, not learned**. Only an explicit prefix
+  (`kernel:`, `apl:`, `llm:`, ...) is treated as a declaration with confidence 1.0;
+  everything else is a keyword/grammar heuristic that reports the hint it matched and a
+  confidence below 1.0, and an unmatched request is refused (`TaskKind::Unknown`). A
+  heuristic route can therefore be wrong in principle — the confidence and the reason are
+  printed precisely so a caller can see the basis for the choice.
+* The router does not decompose compound requests into a task graph, does not chain
+  verification automatically, and has no planner. Verifying a generated answer against a
+  knowledge base is an explicit second request (`prolog:<claim>` with a `KnowledgeBase`).
+* Actor tasks are not routed to: the router refuses to invent a message for an unnamed
+  actor, and the runtime is driven through its own API.
+
 ## Parallelism
 
 * Occam strategies are OS threads; the measured speedup is reported as measured and can

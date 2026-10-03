@@ -24,10 +24,17 @@ Measured suite results at this snapshot:
 
 | build | result | skips |
 |---|---|---|
-| default (`OCT_WITH_LLAMA=OFF`) | **55 passed, 0 failed, 1279 assertions** | 5: 4 llama.cpp tests (backend not linked) + 1 Fortran |
+| default (`OCT_WITH_LLAMA=OFF`), `third_party/llama.cpp` cloned | **55 passed, 0 failed, 1279 assertions** | 5: 4 llama.cpp tests (backend not linked) + 1 Fortran |
 | inference (`OCT_WITH_LLAMA=ON`) | **59 passed, 0 failed, 1308 assertions** | 1: Fortran |
+| fresh clone, dependency not fetched | **50 passed, 0 failed, 1242 assertions** | 10: the above 5, plus 5 fixture-dependent tests (tokenizer fixtures, model metadata, LLM host) |
 
-`octopus selftest` reports **13/13 module self-checks pass** in both builds. Every skip
+The third row is what a fresh clone of `main` produces before `./scripts/fetch_deps.sh`
+clones the pinned llama.cpp: `third_party/llama.cpp/` is deliberately not committed, so
+every test that needs an upstream vocabulary fixture skips with "llama.cpp vocabulary
+fixtures not present". Nothing fails, and nothing passes silently — the count of skipped
+tests is the visible cost of not fetching the dependency.
+
+`octopus selftest` reports **13/13 module self-checks pass** in all three cases. Every skip
 prints its reason, and `run_tests.py --strict` converts skips into failures.
 
 ## The 14 required test categories

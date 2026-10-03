@@ -17,9 +17,15 @@ Requirements: a C++20 compiler (g++ 11+ or clang 14+), CMake 3.16+, Python 3 (fo
 and benchmark drivers). No network access is required or used.
 
 ```sh
+./scripts/fetch_deps.sh          # optional: clone llama.cpp @ b11371 for vocabulary fixtures
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
+
+The pinned dependency is cloned, never committed (`third_party/llama.cpp/` is ignored).
+Without it the build and the suite still work: the five tests that need upstream vocabulary
+fixtures skip with a printed reason (a fresh clone reports 50 passed / 10 skipped rather than
+55 / 5). Run the fetch step first if you want every test exercised.
 
 Optional, auto-detected at configure time:
 

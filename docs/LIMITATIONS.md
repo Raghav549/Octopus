@@ -156,7 +156,8 @@ comment only.
   NaN/Inf marker). Quantisation error is bounded by the palette step and the bound is
   documented and tested (≤ 0.12 on [−1,1]); it is lossy and not a physical rendering.
 * The PNG writer emits stored (uncompressed) deflate blocks, so files are large
-  (~786 KiB for 512×512 RGB). No image decoding, no animation, no colour management.
+  (~786 KiB for 512×512 RGB; `docs/piet_state_example.png` is 256×256, 196 947 bytes,
+  sha256 `bb29e5b6f53f4dae7eeb9236957a476ba442dfe85e4a6661a9abc25b6254eabd`). No image decoding, no animation, no colour management.
 
 ## Build/packaging
 

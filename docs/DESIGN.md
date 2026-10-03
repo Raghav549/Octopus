@@ -18,6 +18,21 @@ knows about models. It has two layers:
   answer (`"note":"deterministic stub, not model inference"`). There is no path that
   silently returns synthetic text as if it were model output.
 
+## Capability router
+
+`router::Router` is the single front door: it classifies a request by task type and
+dispatches it through the capability registry. The design decision that matters is that
+*classification evidence is part of the output*: an explicit prefix (`kernel:`, `apl:`,
+`llm:` ...) is a declaration and is reported with confidence 1.0; a heuristic route records
+the hint it matched and a confidence below 1.0; an unmatched request is refused with
+`TaskKind::Unknown` rather than sent somewhere plausible. `octopus ask` therefore prints
+`route_kind`, `route_module`, `route_reason`, `route_confidence` next to the answer.
+
+Routing does not imply trust: the numeric route returns the same validated `Result` (with
+method, backend, units, residual and fingerprint) that a direct call returns, the logic
+route returns a `Grounded`/`Refuted`/`Unknown` verdict with its evidence, and the language
+route fails closed when no model is loaded.
+
 ## Correctness model ("no guessing")
 
 Every numeric kernel returns a `Result` carrying `method`, `backend`, `units`, shape,

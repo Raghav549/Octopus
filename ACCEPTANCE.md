@@ -9,7 +9,7 @@ compiler, no model weights, no network). Reproduce with:
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 python3 tests/run_tests.py --no-build          # 55 passed, 0 failed, 5 skipped
 python3 bench/bench.py --no-build --repeats 3  # bench/results/{raw.csv,summary.md}
-./build/octopus selftest                       # 12/12 modules, each assertion executed
+./build/octopus selftest                       # 13/13 modules, each assertion executed
 
 # inference build: real llama.cpp statically linked
 cmake -B build-llama -S . -DCMAKE_BUILD_TYPE=Release -DOCT_WITH_LLAMA=ON \

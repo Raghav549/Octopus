@@ -1,0 +1,20 @@
+# Build output
+build/
+*.o
+*.a
+*.so
+
+# Vendored dependencies: cloned, not committed (see third_party/LLAMA_CPP_REVISION.txt)
+third_party/llama.cpp/
+
+# Benchmark artifacts
+bench/results/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

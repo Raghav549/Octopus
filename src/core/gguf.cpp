@@ -500,7 +500,7 @@ void Writer::set_str(std::string key, std::string v) { Value x; x.type = ValueTy
 void Writer::set_bool(std::string key, bool v) { Value x; x.type = ValueType::BOOL; x.data = v; set_metadata(std::move(key), std::move(x)); }
 
 void Writer::set_str_array(std::string key, const std::vector<std::string>& v) {
-    Value x; x.type = ValueType::ARRAY;
+    Value x; x.type = ValueType::ARRAY; x.array_element_type = ValueType::STRING;
     ArrayValue arr;
     arr.reserve(v.size());
     for (const auto& s : v) { Value e; e.type = ValueType::STRING; e.data = s; arr.push_back(std::move(e)); }
@@ -508,7 +508,7 @@ void Writer::set_str_array(std::string key, const std::vector<std::string>& v) {
     set_metadata(std::move(key), std::move(x));
 }
 void Writer::set_f32_array(std::string key, const std::vector<float>& v) {
-    Value x; x.type = ValueType::ARRAY;
+    Value x; x.type = ValueType::ARRAY; x.array_element_type = ValueType::FLOAT32;
     ArrayValue arr;
     arr.reserve(v.size());
     for (float s : v) { Value e; e.type = ValueType::FLOAT32; e.data = double(s); arr.push_back(std::move(e)); }
@@ -516,7 +516,7 @@ void Writer::set_f32_array(std::string key, const std::vector<float>& v) {
     set_metadata(std::move(key), std::move(x));
 }
 void Writer::set_i32_array(std::string key, const std::vector<int32_t>& v) {
-    Value x; x.type = ValueType::ARRAY;
+    Value x; x.type = ValueType::ARRAY; x.array_element_type = ValueType::INT32;
     ArrayValue arr;
     arr.reserve(v.size());
     for (int32_t s : v) { Value e; e.type = ValueType::INT32; e.data = int64_t(s); arr.push_back(std::move(e)); }
@@ -562,7 +562,7 @@ static void write_value(std::vector<uint8_t>& b, const Value& v) {
         case ValueType::FLOAT64: { double d = v.as_f64(); uint64_t u; std::memcpy(&u, &d, 8); put_u64(b, u); break; }
         case ValueType::ARRAY: {
             const auto& a = v.as_array();
-            uint32_t et = a.empty() ? uint32_t(ValueType::UINT8) : uint32_t(a[0].type);
+            uint32_t et = a.empty() ? uint32_t(v.array_element_type) : uint32_t(a[0].type);
             put_u32(b, et);
             put_u64(b, a.size());
             for (const auto& e : a) {

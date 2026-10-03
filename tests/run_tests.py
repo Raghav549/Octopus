@@ -29,9 +29,9 @@ BUILD = ROOT / "build"
 CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("1 clean-build tests", "the configure/build step itself", []),
     ("2 model metadata tests", "integration.model_metadata_from_a_real_gguf_file", ["integration.model_metadata"]),
-    ("3 llama.cpp integration tests", "llm.host backend reporting", ["layers.llm_host"]),
+    ("3 llama.cpp integration tests", "llm.cpp link/load/generate path", ["layers.llm_host", "llm."]),
     ("4 tokenizer tests", "byte-level BPE vs upstream fixtures", ["tokenizer."]),
-    ("5 deterministic generation tests", "stub/backend determinism + reproducibility", ["engine.results_are_reproducible", "layers.llm_host"]),
+    ("5 deterministic generation tests", "greedy decode determinism + reproducible results", ["engine.results_are_reproducible", "layers.llm_host", "llm.synthetic"]),
     ("6 numerical kernel correctness tests", "kernels vs analytic/manufactured references", ["numerics."]),
     ("7 array IR property tests", "APL evaluator and codec", ["languages.apl", "layers.piet_quantisation"]),
     ("8 rule-engine tests", "Prolog SLD + verification verdicts", ["languages.prolog"]),
@@ -52,6 +52,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-build", action="store_true", help="skip the cmake build step")
     ap.add_argument("--strict", action="store_true", help="treat skipped tests as failures")
+    ap.add_argument("--build-dir", default="build", help="build directory to test")
     ap.add_argument("--json", dest="json_out", default=None, help="write the summary JSON here")
     args = ap.parse_args()
 

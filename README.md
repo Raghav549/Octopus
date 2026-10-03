@@ -52,6 +52,7 @@ python3 bench/bench.py                   # reproducible benchmark -> bench/resul
 ./build/octopus prolog 'ancestor(X, Y)'
 ./build/octopus forth ': sq dup * ; 9 sq .'
 ./build/octopus tokenizer --model third_party/llama.cpp/models/ggml-vocab-gpt-2.gguf --text "hello"
+./build/slmgen /tmp/tiny.gguf                   # synthetic-weight tiny model (offline)
 ./build/octopus guard encode --key k --in secret.txt --out secret.bin
 ./build/octopus piet --in state.txt --out state.png
 ./build/octopus supervise --json
@@ -72,7 +73,8 @@ python3 bench/bench.py                   # reproducible benchmark -> bench/resul
 | INTERCAL-style guardrail | `src/intercal/` | obfuscated, tamper-evident envelopes and a hash-linked audit chain (**not** a cipher) |
 | Piet-style visualisation | `src/piet/` | cognitive-state rendering to PNG (no zlib) / PPM, bounded quantisation, NaN marked black |
 | Supervisor | `src/supervisor/` | health checks, watchdogs, Prolog invariants, restart/rollback hooks, audit chain |
-| LLM host | `src/host/` | reads real GGUF metadata without llama.cpp; without the backend `generate()` is unavailable **or** an explicitly labelled deterministic stub |
+| LLM host | `src/host/` | reads real GGUF metadata without llama.cpp; without the backend `generate()` is unavailable **or** an explicitly labelled deterministic stub; with `-DOCT_WITH_LLAMA=ON` it runs the real llama.cpp tokenize → prefill → decode → sample → detokenize path |
+| Synthetic model writer | `src/host/synthetic_model.cpp`, `tools/slmgen.cpp` | writes a complete, loadable tiny llama GGUF with pseudo-random weights so the inference path can be exercised offline without downloading anything |
 
 ## Design rules that are enforced, not aspirational
 
@@ -98,6 +100,21 @@ bench/             bench.py driver; results land in bench/results/
 third_party/       pinned llama.cpp checkout + GGUF vocabulary fixtures (not vendored into git)
 docs/              LIMITATIONS.md, example render, design notes
 ```
+
+## Enabling real inference
+
+```sh
+./scripts/fetch_deps.sh                                     # clones llama.cpp @ b11371
+cmake -B build-llama -S . -DCMAKE_BUILD_TYPE=Release -DOCT_WITH_LLAMA=ON \
+      -DOCT_LLAMA_PREBUILT_DIR=$PWD/third_party/llama.cpp/build-static
+cmake --build build-llama -j
+./build-llama/slmgen /tmp/tiny.gguf                         # ~0.45 MiB, synthetic weights
+./build-llama/octopus llm --model /tmp/tiny.gguf --prompt 'hello' --max-tokens 8 --json
+```
+
+With trained GGUF weights of your own, point `--model` at them instead. Weights produced
+by `slmgen` are pseudo-random by construction: the text is nonsense and every report says
+so — the value is that the whole path runs offline and greedily decoding is reproducible.
 
 ## Reproduction
 

@@ -29,6 +29,10 @@ using ArrayValue = std::vector<Value>;
 
 struct Value {
     ValueType type = ValueType::UINT32;
+    // For arrays: the declared element type. It must be recorded explicitly
+    // because an *empty* string array has no element to infer it from, and the
+    // GGUF reader on the other side (llama.cpp) checks the declared type.
+    ValueType array_element_type = ValueType::UINT8;
     std::variant<uint64_t, int64_t, double, bool, std::string, ArrayValue> data;
 
     bool        is_array() const { return type == ValueType::ARRAY; }

@@ -5,16 +5,30 @@ Everything below was executed in the environment described in
 compiler, no model weights, no network). Reproduce with:
 
 ```sh
+# default build: no llama.cpp linked, no Fortran compiler
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-python3 tests/run_tests.py --no-build          # 50 passed, 0 failed, 1 skipped, 1159 assertions
+python3 tests/run_tests.py --no-build          # 51 passed, 0 failed, 4 skipped
 python3 bench/bench.py --no-build --repeats 3  # bench/results/{raw.csv,summary.md}
 ./build/octopus selftest                       # 12/12 modules, each assertion executed
+
+# inference build: real llama.cpp statically linked
+cmake -B build-llama -S . -DCMAKE_BUILD_TYPE=Release -DOCT_WITH_LLAMA=ON \
+      -DOCT_LLAMA_PREBUILT_DIR=$PWD/third_party/llama.cpp/build-static
+cmake --build build-llama -j
+./build-llama/oct_tests                        # 55 passed, 0 failed, 1 skipped, 1194 assertions
+./build-llama/slmgen /tmp/tiny.gguf            # synthetic-weight model (offline)
+./build-llama/octopus llm --model /tmp/tiny.gguf --prompt 'hello' --max-tokens 8 --json
 ```
 
-Measured suite result at this snapshot: **50 passed, 0 failed, 1 skipped, 1159
-executed assertions**; **12/12 module self-checks pass**. The single skip is
-`numerics.sod1d_fortran_matches_cxx_when_available` ("Fortran backend absent") — the
-reason is printed, and the skip is converted to a failure by `run_tests.py --strict`.
+Measured suite results at this snapshot:
+
+| build | result | skips |
+|---|---|---|
+| default (`OCT_WITH_LLAMA=OFF`) | **51 passed, 0 failed, 1165 assertions** | 4: 3 llama.cpp tests (backend not linked) + 1 Fortran |
+| inference (`OCT_WITH_LLAMA=ON`) | **55 passed, 0 failed, 1194 assertions** | 1: Fortran |
+
+`octopus selftest` reports **12/12 module self-checks pass** in both builds. Every skip
+prints its reason, and `run_tests.py --strict` converts skips into failures.
 
 ## The 14 required test categories
 
@@ -22,9 +36,9 @@ reason is printed, and the skip is converted to a failure by `run_tests.py --str
 |---|---|---|---|
 | 1 | clean-build tests | `cmake -B build && cmake --build build -j` from a clean tree; the runner fails the whole report if configure/build fails | **PASS** |
 | 2 | model metadata tests | `integration.model_metadata_from_a_real_gguf_file` reads a real GGUF (50 257 tokens for the GPT-2 vocab fixture) and rejects a non-GGUF file | **PASS** |
-| 3 | llama.cpp integration tests | `layers.llm_host_reports_what_it_cannot_do`: `backend()` reports `compiled=false`, `load()` without the stub fails closed, `load()` with `--allow-stub` returns a labelled deterministic answer. **The real llama.cpp path is not compiled here** — see LIMITATIONS | **PARTIAL (backend absent)** |
+| 3 | llama.cpp integration tests | In the `OCT_WITH_LLAMA=ON` build: `llm.backend_is_linked_and_honest`, `llm.metadata_only_gguf_is_refused_not_guessed`, `llm.missing_model_fails_and_stub_stays_labelled`, and `llm.synthetic_model_end_to_end_generation_is_deterministic` — llama.cpp loads a generated model, tokenizes, prefills, decodes, samples and detokenizes offline. In the default build these skip with a printed reason | **PASS (synthetic weights; no trained model available)** |
 | 4 | tokenizer tests | `tokenizer.gpt2_matches_the_reference_fixture_exactly`: **46/46 cases and 473/473 tokens** vs the upstream fixture; degraded paths measured (deepseek-llm 0.978 cases / 0.996 tokens) and labelled | **PASS** |
-| 5 | deterministic generation tests | `engine.results_are_reproducible_and_fingerprints_bind_the_spec` (bit-identical reruns, spec-bound SHA-256), `layers.llm_host...` (stub determinism). No real-model determinism is claimed | **PASS (stub only)** |
+| 5 | deterministic generation tests | `llm.synthetic_model_end_to_end_generation_is_deterministic`: greedy decoding of the synthetic model is bit-for-bit identical across repeated calls *and* across separate processes (KV cache is reset per call — a bug this test found); plus `engine.results_are_reproducible_and_fingerprints_bind_the_spec` | **PASS** |
 | 6 | numerical kernel correctness | 14 tests: shock tube vs exact Riemann solver; heat vs manufactured solution + measured order; Poisson vs analytic + CG cross-check; cavity projections + Ghia Re=100; Kepler vs analytic + order; N-body momentum; ideal-gas identities; LU vs CG + honest Hilbert conditioning | **PASS** |
 | 7 | array IR property tests | APL: reduce/scan/reshape/transpose, inner and outer products vs hand computation, solve residual checked independently, malformed programs rejected | **PASS** |
 | 8 | rule-engine tests | Prolog: `Grounded` only with a derivation, `Refuted` only for declared-complete predicates, `Unknown` + `hit_limit` for a truncated search; arithmetic unification (`X is 2+3*4-1` → 13) | **PASS** |
@@ -48,8 +62,23 @@ reason is printed, and the skip is converted to a failure by `run_tests.py --str
 | `gas` | closed-form identities | `ds/R` error 2.37e-17, `pv^γ` 1.80e-16 | ≤ 1e-12 |
 | `linsolve` | LU vs CG | SPD residual 5.5e-17, LU-vs-CG 4.2e-12 | ≤ 1e-8; Hilbert honesty gate |
 
-Two defects were found *by these tests and benchmarks* and fixed in this snapshot, which is
-the point of the exercise:
+### Inference path (llama.cpp build, synthetic weights)
+
+```
+$ ./build-llama/slmgen /tmp/tiny.gguf
+{"file":"/tmp/tiny.gguf","bytes":467552,"layers":2,"embd":64,"heads":4,"ff":128,
+ "vocab":259,"weights":"synthetic-pseudo-random","sha256":"fead173b…"}
+$ ./build-llama/octopus llm --model /tmp/tiny.gguf --prompt 'hello world' --max-tokens 8 --json
+{"text":"\udcde…","backend":"{\"compiled\":true,\"available\":true,\"stub\":false,
+ "name\":\"llama.cpp\",\"version\":\"b11371\",\"honesty\":\"llama.cpp static backend
+ linked and a model is loaded; generation runs entirely on this machine\"}"}
+```
+
+Deterministic: the same prompt and greedy parameters produce identical bytes on repeated
+calls and in separate processes. This proves the execution path, **not** model quality.
+
+Defects found *by these tests, benchmarks and the inference run* and fixed in this
+snapshot, which is the point of the exercise:
 
 1. `poisson2d`'s red-black SOR folded the wall ghost into the neighbour sum while keeping a
    diagonal of 4. The iteration operator therefore differed from the operator the residual
@@ -59,6 +88,15 @@ the point of the exercise:
 2. The same mistake was present in `cavity2d`'s pressure solve (Neumann ghosts);
    corrected the same way (diagonal 3 on edges, 2 in corners), after which the projection
    invariant tightened to 2.06e-9.
+3. `llama_generate_impl` had never been compiled; on first build it hit a most-vexing-parse
+   (`std::vector<llama_token> tokens(size_t(n_prompt))` declared a function) and the
+   one-token re-decode passed a stale batch. Rewritten and now exercised end to end.
+4. The same function did not reset the KV cache between calls, so a second `generate()`
+   continued from the previous generation's state and greedy decoding was **not**
+   reproducible. Caught by the new determinism test; fixed with `llama_memory_clear`.
+5. The GGUF writer typed an *empty* string array as `arr[u8,0]`, which llama.cpp rejects
+   ("invalid gguf type for tokenizer.ggml.merges"); empty arrays now record their declared
+   element type. Without this the synthetic model could not be loaded at all.
 
 ## Benchmark snapshot (2 threads, this container; `bench/results/summary.md`)
 
@@ -80,9 +118,11 @@ the point of the exercise:
 
 ## What is *not* accepted (and is labelled as such everywhere)
 
-* Real SLM inference: **not demonstrated** — no weights, no llama.cpp library in this
-  build. `octopus version` says `"stub": true`; the CLI refuses to answer without
-  `--allow-stub`.
+* Real SLM inference **with trained weights**: not demonstrated — none are available here.
+  What *is* demonstrated is the full inference path executing on real llama.cpp with a
+  generated synthetic-weight model (see below); the output is nonsense by construction and
+  is labelled as such everywhere. `octopus version` reports `"stub": true` until a model
+  is loaded; without one the CLI refuses to answer unless `--allow-stub` is passed.
 * Fortran backend: **unexercised** — no Fortran compiler. Its test skips with a reason.
 * Security: no cryptographic claims. Obfuscation + tamper evidence only; audit chain and
   fuzz results are measured, "immune to decompilation" is explicitly *not* claimed.

@@ -6,6 +6,8 @@
 // SPDX-License-Identifier: MIT
 #include "octopus/llm.hpp"
 
+#include <climits>
+
 #include "octopus/module.hpp"
 
 #include <cmath>
@@ -78,14 +80,20 @@ BackendInfo Host::backend() const {
                 "OCT_WITH_LLAMA=OFF or no prebuilt llama.cpp tree was found";
 #if defined(OCT_HAVE_LLAMA)
     b.compiled = true;
+    // "available" means the llama.cpp library is linked and usable, not that a
+    // model has been loaded: ModelFacts/load() are what report model state.
+    b.available = true;
     b.name = "llama.cpp";
     b.version = "b11371";
     if (loaded_ && !stub_mode_) {
-        b.available = true;
         b.stub = false;
-        b.honesty = "llama.cpp static backend linked; generation runs entirely on this machine";
+        b.honesty = "llama.cpp static backend linked and a model is loaded; generation runs "
+                    "entirely on this machine";
     } else {
-        b.honesty = "llama.cpp compiled in but no model is loaded (stub mode available for tests)";
+        b.stub = true;
+        b.honesty = "llama.cpp static backend linked, but no model is loaded: load() refuses to "
+                    "answer unless a real model file is supplied (the deterministic stub is only "
+                    "used when explicitly allowed)";
     }
 #endif
     return b;
@@ -173,30 +181,95 @@ Outcome<std::string> Host::detokenize(std::span<const uint32_t> ids) const {
 #if defined(OCT_HAVE_LLAMA)
 namespace {
 
+// Greedy/temperature sampling loop against the loaded context.
+//
+// NOTE ON TEST STATUS: this function is compiled and linked only in an
+// OCT_WITH_LLAMA build, and it needs real model weights to run end to end.
+// In the environment this repository was assembled in no weights were
+// available, so the loop compiles and links but has never executed a token.
+// See docs/LIMITATIONS.md. Failures are returned, never guessed around.
 std::string llama_generate_impl(llama_model* model, llama_context* ctx, const std::string& prompt,
-                                const GenerateParams& p) {
+                                const GenerateParams& p, std::string* error) {
     const llama_vocab* vocab = llama_model_get_vocab(model);
-    int n_prompt = -llama_tokenize(vocab, prompt.c_str(), int(prompt.size()), nullptr, 0, true, true);
-    std::vector<llama_token> tokens(size_t(n_prompt));
-    if (llama_tokenize(vocab, prompt.c_str(), int(prompt.size()), tokens.data(), n_prompt, true,
-                       true) < 0)
-        return "";
-    auto* chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    if (!vocab) {
+        *error = "model has no vocabulary";
+        return {};
+    }
+
+    // Tokenise: a negative return is the required buffer size.
+    int32_t needed = llama_tokenize(vocab, prompt.c_str(), int32_t(prompt.size()), nullptr, 0, true,
+                                    true);
+    if (needed == INT32_MIN) {
+        *error = "prompt is too long to tokenise";
+        return {};
+    }
+    if (needed < 0) needed = -needed;
+    std::vector<llama_token> tokens(size_t(std::max(1, needed)));
+    const int32_t n_tok = llama_tokenize(vocab, prompt.c_str(), int32_t(prompt.size()),
+                                         tokens.data(), int32_t(tokens.size()), true, true);
+    if (n_tok < 0) {
+        *error = "tokenisation failed (needed " + std::to_string(-n_tok) + " tokens)";
+        return {};
+    }
+    tokens.resize(size_t(n_tok));
+    if (tokens.empty()) {
+        *error = "prompt produced no tokens";
+        return {};
+    }
+    if (int64_t(tokens.size()) >= int64_t(llama_n_ctx(ctx))) {
+        *error = "prompt does not fit in the context (" + std::to_string(tokens.size()) + " >= " +
+                 std::to_string(llama_n_ctx(ctx)) + ")";
+        return {};
+    }
+
+    llama_sampler* chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (!chain) {
+        *error = "could not create a sampler chain";
+        return {};
+    }
+    if (p.temperature <= 0.0) {
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    } else {
+        if (p.top_k > 0) llama_sampler_chain_add(chain, llama_sampler_init_top_k(int32_t(p.top_k)));
+        if (p.top_p < 1.0)
+            llama_sampler_chain_add(chain, llama_sampler_init_top_p(float(p.top_p), 1));
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(float(p.temperature)));
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(uint32_t(p.seed)));
+    }
+
+    // Reset the KV cache: without this, a second generate() call continues from
+    // the previous generation's state and greedy decoding stops being
+    // reproducible (found by tests/test_llama.cpp).
+    if (llama_memory_t mem = llama_get_memory(ctx)) llama_memory_clear(mem, /*data=*/true);
+
+    // Prefill the prompt, then sample one token per decode step.
+    llama_batch batch = llama_batch_get_one(tokens.data(), int32_t(tokens.size()));
+    if (llama_decode(ctx, batch) != 0) {
+        llama_sampler_free(chain);
+        *error = "prefill decode failed (prompt may not fit the context)";
+        return {};
+    }
+
     std::string out;
-    llama_batch batch = llama_batch_get_one(tokens.data(), int(tokens.size()));
     for (int64_t i = 0; i < p.max_tokens; ++i) {
-        if (llama_decode(ctx, batch) != 0) break;
         const llama_token id = llama_sampler_sample(chain, ctx, -1);
         if (id == llama_vocab_eos(vocab)) break;
         char buf[256];
-        const int n = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
-        if (n < 0) break;
-        out.append(buf, size_t(n));
-        batch = llama_batch_get_one(&tokens[0], 0);
-        (void)batch;
-        llama_token tok = id;
-        batch = llama_batch_get_one(&tok, 1);
+        int32_t n = llama_token_to_piece(vocab, id, buf, int32_t(sizeof(buf)), 0, true);
+        if (n < 0) {                       // buffer too small: retry with the reported size
+            std::string big(size_t(-n), '\0');
+            n = llama_token_to_piece(vocab, id, big.data(), int32_t(big.size()), 0, true);
+            if (n < 0) break;
+            out.append(big.data(), size_t(n));
+        } else {
+            out.append(buf, size_t(n));
+        }
+        llama_token next = id;
+        batch = llama_batch_get_one(&next, 1);
+        if (llama_decode(ctx, batch) != 0) {
+            *error = "decode failed at token " + std::to_string(i);
+            break;
+        }
     }
     llama_sampler_free(chain);
     return out;
@@ -205,15 +278,19 @@ std::string llama_generate_impl(llama_model* model, llama_context* ctx, const st
 }  // namespace
 #endif
 
+
 Outcome<std::string> Host::generate(std::string_view prompt, const GenerateParams& params) {
     if (!loaded_)
         return Status::unavailable("llm: no model loaded; call load() first");
     if (!stub_mode_) {
 #if defined(OCT_HAVE_LLAMA)
+        std::string error;
         const std::string text = llama_generate_impl(static_cast<llama_model*>(llama_model_),
                                                      static_cast<llama_context*>(llama_context_),
-                                                     std::string(prompt), params);
-        if (text.empty()) return Status::degraded("llm: generation produced no tokens");
+                                                     std::string(prompt), params, &error);
+        if (text.empty())
+            return Status::degraded("llm: generation produced no tokens" +
+                                    (error.empty() ? std::string() : std::string(" (") + error + ")"));
         return text;
 #else
         return Status::unavailable("llm: stub mode reached the non-stub path");

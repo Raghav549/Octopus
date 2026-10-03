@@ -14,15 +14,25 @@ comment only.
   reviewed but unexercised, and the test that compares it against the C++ reference
   (`numerics.sod1d_fortran_matches_cxx_when_available`) **SKIPS with a printed reason**.
   Expect to debug that file on the first machine that has a Fortran compiler.
-* **No model weights.** Hugging Face and GitHub release assets are unreachable from this
-  environment, so no SLM (Llama-3-8B / Phi-3 4-bit or otherwise) is present. The
-  `llm.host` module reads real GGUF metadata and, without llama.cpp linked, `generate()`
-  returns `Status::unavailable` — or, only when `--allow-stub` is passed explicitly, a
-  deterministic *labelled* stub. **No result in this repository is model output.**
-* The llama.cpp checkout at tag `b11371` is present for headers, vocabulary fixtures and
-  tokenizer reference data; the static library build had not completed when this snapshot
-  was written. The `OCT_HAVE_LLAMA` branch of `src/host/llama_host.cpp` (real
-  `llama_model_load_from_file` / batch decode loop) has **never been compiled or run**.
+* **No trained model weights.** Hugging Face and GitHub release assets are unreachable
+  from this environment, so no SLM (Llama-3-8B / Phi-3 4-bit or otherwise) is present.
+  The `llm.host` module reads real GGUF metadata and, without llama.cpp linked,
+  `generate()` returns `Status::unavailable` — or, only when `--allow-stub` is passed
+  explicitly, a deterministic *labelled* stub.
+* **What *is* demonstrated:** `tools/slmgen` writes a complete, loadable
+  llama-architecture GGUF whose weights are deterministic pseudo-random numbers (2 layers,
+  embedding 64, 4 heads, F32, ~0.45 MiB). In the `-DOCT_WITH_LLAMA=ON` build, llama.cpp
+  loads it and the engine runs the full path — tokenize → prefill → decode → sample →
+  detokenize — entirely offline. The tokens it produces are **nonsense**, because the
+  weights are noise: the evidence is that the pipeline executes and that greedy decoding
+  is bit-for-bit reproducible across calls and processes, not that the engine writes good
+  text. The file states its own provenance (`octopus.weights = synthetic-pseudo-random`)
+  and every tool that reports it labels it as synthetic.
+* The llama.cpp checkout at tag `b11371` is present, and a static build of it
+  (`libllama.a`, `libggml{,-base,-cpu}.a`) was produced in this environment. The
+  `OCT_HAVE_LLAMA` path of `src/host/llama_host.cpp` compiles, links and runs against a
+  generated synthetic model (see above); it has still never run against a *trained* model,
+  so real-model behaviour (chat templates, long contexts, KV pressure) is untested.
 
 ## SLM / inference
 

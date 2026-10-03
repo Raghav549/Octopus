@@ -49,6 +49,7 @@ set(OCT_CXX_SOURCES
   src/piet/piet.cpp
   src/supervisor/supervisor.cpp
   src/host/llama_host.cpp
+  src/host/synthetic_model.cpp
 )
 
 add_library(octopus_core STATIC ${OCT_CXX_SOURCES})

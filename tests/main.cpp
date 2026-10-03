@@ -3,6 +3,8 @@
 #include "harness.hpp"
 
 #include "octopus/core.hpp"
+#include "octopus/llm.hpp"
+#include "octopus/numerics.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -160,5 +162,17 @@ int main(int argc, char** argv) {
         }
     }
     oct::set_log_level(oct::LogLevel::Error);
+
+    // Optional-subsystem gates. These are about whether the code path was
+    // *compiled and linked* (what a test can exercise here), not about whether
+    // a model file happens to be present on the machine: tests that need real
+    // weights skip individually with a printed reason.
+    const bool llama_linked = oct::llm::Host{}.backend().compiled;
+    const bool fortran_linked = oct::numerics::KernelLibrary::instance().fortran_available();
+    octest::set_capabilities(llama_linked, fortran_linked);
+    if (!json && !list) {
+        std::cout << "capabilities: llama.cpp " << (llama_linked ? "linked" : "not linked")
+                  << ", Fortran " << (fortran_linked ? "linked" : "not linked") << "\n";
+    }
     return octest::run_all(filter, json, list);
 }

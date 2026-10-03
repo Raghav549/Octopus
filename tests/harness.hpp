@@ -47,6 +47,10 @@ struct SkipTest { std::string reason; };
 
 int run_all(const std::string& filter, bool json_output, bool list_only);
 
+// Records which optional backends were compiled into this build (drives the
+// per-test skip decision for OCT_TEST_REQ_LLAMA / OCT_TEST_REQ_FORTRAN).
+void set_capabilities(bool llama_linked, bool fortran_linked);
+
 }  // namespace octest
 
 #define OCT_TEST(SUITE, NAME)                                                  \

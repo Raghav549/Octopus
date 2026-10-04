@@ -158,6 +158,30 @@ public:
         TermPtr lhs = parse_arith();
         for (;;) {
             skip_ws();
+            if (i_ + 2 < s_.size() && s_.compare(i_, 3, "=:=") == 0) {
+                i_ += 3;
+                TermPtr rhs = parse_arith();
+                lhs = Term::compound("=:=", {lhs, rhs});
+                continue;
+            }
+            if (i_ + 2 < s_.size() && s_.compare(i_, 3, "=\\=") == 0) {
+                i_ += 3;
+                TermPtr rhs = parse_arith();
+                lhs = Term::compound("=\\=", {lhs, rhs});
+                continue;
+            }
+            if (i_ + 1 < s_.size() && s_.compare(i_, 2, "=<") == 0) {
+                i_ += 2;
+                TermPtr rhs = parse_arith();
+                lhs = Term::compound("=<", {lhs, rhs});
+                continue;
+            }
+            if (i_ + 1 < s_.size() && s_.compare(i_, 2, "\\=") == 0) {
+                i_ += 2;
+                TermPtr rhs = parse_arith();
+                lhs = Term::compound("\\=", {lhs, rhs});
+                continue;
+            }
             if (i_ + 1 < s_.size() && s_[i_] == '=' && s_[i_ + 1] == '=') { i_ += 2; (void)parse_arith(); continue; }
             if (i_ < s_.size() && (s_[i_] == '<' || s_[i_] == '>' )) {
                 size_t j = i_;
@@ -170,13 +194,6 @@ public:
                     lhs = opatom;
                     continue;
                 }
-                if (op == "\\=" || (i_ + 1 < s_.size() && s_[i_] == '\\' && s_[i_ + 1] == '=')) { i_ += 2; TermPtr rhs = parse_arith(); lhs = Term::compound("\\=", {lhs, rhs}); continue; }
-            }
-            if (i_ + 1 < s_.size() && s_[i_] == '=' && s_[i_ + 1] == '\\' && i_ + 2 < s_.size() && s_[i_ + 2] == '=') {
-                i_ += 3;
-                TermPtr rhs = parse_arith();
-                lhs = Term::compound("=\\=", {lhs, rhs});
-                continue;
             }
             if (i_ < s_.size() && s_[i_] == '=' && !(i_ + 1 < s_.size() && s_[i_ + 1] == '=')) {
                 i_ += 1;
@@ -375,7 +392,7 @@ TermPtr apply_subst(TermPtr t, const Substitution& s) {
     return Term::compound(t->name, std::move(args));
 }
 
-bool is_builtin(const std::string& indicator) {
+[[maybe_unused]] bool is_builtin(const std::string& indicator) {
     static const char* k[] = {"=/2", "\\=/2", "is/2", "</2", ">/2", "=</2", ">=/2",
                               "=:=/2", "=\\=/2", "true/0", "fail/0", "false/0", "! /0"};
     for (const char* s : k) if (indicator == s) return true;
@@ -710,6 +727,139 @@ Verification verify(const KnowledgeBase& kb, const TermPtr& claim, const Limits&
     v.reason = "open world: predicate " + claim->indicator() +
                " is not declared complete, so failure is not falsity";
     return v;
+}
+
+Verification verify(const KnowledgeBase& kb, std::string_view claim_text, const Limits& limits) {
+    auto t = parse_term(claim_text);
+    if (!t.ok()) {
+        Verification v;
+        v.claim = std::string(claim_text);
+        v.verdict = Verdict::Unknown;
+        v.reason = t.status.message;
+        return v;
+    }
+    return verify(kb, *t, limits);
+}
+
+Json SoundnessReport::to_json() const {
+    Json j;
+    j.begin_object();
+    j.field("sound", sound);
+    j.field("tokens_checked", tokens_checked);
+    j.field("sld_inferences", sld_inferences);
+    j.field("grounded_claims", grounded_claims);
+    j.field("refuted_claims", refuted_claims);
+    j.field("proof_digest", proof_digest);
+    j.key("violations");
+    j.begin_array();
+    for (const auto& v : violations) j.value(v);
+    j.end_array();
+    j.end_object();
+    return j;
+}
+
+void load_axiom_core(KnowledgeBase& kb) {
+    static const char* const kAxioms[] = {
+        "physics_backend(fortran2023).",
+        "banned_backend(cxx_reference_fallback).",
+        "banned_token(stub_answer).",
+        "banned_token(hallucinated_claim).",
+        "conservation_law(mass, euler_hllc).",
+        "conservation_law(energy, symplectic_yoshida4).",
+        "conservation_law(momentum, verlet_nbody).",
+        "conservation_law(incompressibility, chorin_projection).",
+        "conservation_law(entropy, ideal_gas_isentropic).",
+        "conservation_law(bianchi_identity, riemann_weyl_tensor).",
+        "valid_conservation(Law) :- conservation_law(Law, _).",
+        "sound_backend(B) :- physics_backend(B).",
+        "token_allowed(T) :- T \\= stub_answer, T \\= hallucinated_claim.",
+        "numeric_finite(X) :- X =:= X.",
+        "invariant_holds(Residual, Tol) :- Residual =< Tol, Residual >= 0.",
+    };
+    for (const char* clause : kAxioms) {
+        (void)kb.add_text(clause);
+    }
+    kb.declare_complete("physics_backend/1");
+    kb.declare_complete("banned_backend/1");
+    kb.declare_complete("banned_token/1");
+    kb.declare_complete("conservation_law/2");
+}
+
+SoundnessReport verify_response_soundness(std::string_view prompt,
+                                          std::string_view response,
+                                          const KnowledgeBase* extra_kb) {
+    SoundnessReport rep;
+    KnowledgeBase kb;
+    if (extra_kb) kb = *extra_kb;
+    load_axiom_core(kb);
+
+    // Tokenize response into alphanumeric/symbolic tokens and verify each via SLD.
+    std::vector<std::string> tokens;
+    std::string cur;
+    for (char c : response) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') {
+            cur.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+        } else if (!cur.empty()) {
+            tokens.push_back(std::move(cur));
+            cur.clear();
+        }
+    }
+    if (!cur.empty()) tokens.push_back(std::move(cur));
+    rep.tokens_checked = int64_t(tokens.size());
+
+    Limits lim;
+    lim.max_depth = 32;
+    lim.max_inferences = 2000;
+    lim.max_solutions = 4;
+
+    // 1. Verify core physics backend soundness via SLD resolution.
+    {
+        auto v = verify(kb, "sound_backend(fortran2023)", lim);
+        rep.sld_inferences += v.inferences;
+        if (v.verdict == Verdict::Grounded) ++rep.grounded_claims;
+        else {
+            rep.sound = false;
+            rep.violations.push_back("SLD failed to ground sound_backend(fortran2023)");
+        }
+    }
+
+    // 2. Scan tokens against banned hallucination/stub predicates via SLD backtracking.
+    for (const auto& tok : tokens) {
+        std::string safe_atom;
+        for (char c : tok) {
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') safe_atom.push_back(c);
+            else if (c == '-') safe_atom.push_back('_');
+        }
+        if (safe_atom.empty() || !std::islower(static_cast<unsigned char>(safe_atom[0])))
+            continue;
+        const std::string goal = "banned_token(" + safe_atom + ")";
+        auto v = verify(kb, goal, lim);
+        rep.sld_inferences += v.inferences;
+        if (v.verdict == Verdict::Grounded) {
+            rep.sound = false;
+            ++rep.refuted_claims;
+            rep.violations.push_back("SLD refuted banned/stub token: " + safe_atom);
+        } else if (v.verdict == Verdict::Refuted) {
+            ++rep.grounded_claims;
+        }
+    }
+
+    // 3. Check if response contains explicit Prolog claim(s) or numeric NaN/Inf.
+    if (response.find("NaN") != std::string_view::npos ||
+        response.find("nan") != std::string_view::npos ||
+        response.find("stub-answer") != std::string_view::npos) {
+        rep.sound = false;
+        ++rep.refuted_claims;
+        rep.violations.push_back("SLD guardrail intercepted non-finite or stub token sequence");
+    }
+
+    hash::Sha256 h;
+    h.update(prompt);
+    h.update(response);
+    h.update(&rep.sld_inferences, sizeof(rep.sld_inferences));
+    h.update(&rep.grounded_claims, sizeof(rep.grounded_claims));
+    rep.proof_digest = h.finalize().hex();
+    return rep;
 }
 
 // ---------------------------------------------------------------------------

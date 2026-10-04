@@ -30,11 +30,13 @@ OCT_TEST(engine, sha256_and_fnv_match_published_reference_vectors) {
 OCT_TEST(engine, registry_exposes_every_builtin_module) {
     Registry reg;
     const size_t n = register_builtin_modules(reg);
-    OCT_EQ(n, size_t(13));                 // 8 numeric/kernel + language DNA + router
-    OCT_EQ(reg.size(), size_t(13));
+    OCT_EQ(n, size_t(14));                 // Fortran 2023 + language DNA + neural router + universe
+    OCT_EQ(reg.size(), size_t(14));
 
     OCT_CHECK(reg.resolve("numeric.kernel.heat2d") != nullptr);
     OCT_CHECK(reg.resolve("numeric.kernel.sod1d") != nullptr);
+    OCT_CHECK(reg.resolve("numeric.kernel.tensor_field") != nullptr);
+    OCT_CHECK(reg.resolve("universe.frame") != nullptr);
     // Capabilities are the dotted operation names modules advertise.
     OCT_CHECK(reg.resolve("array.eval") != nullptr);
     OCT_CHECK(reg.resolve("logic.verify") != nullptr);
@@ -54,7 +56,7 @@ OCT_TEST(engine, registry_exposes_every_builtin_module) {
     if (m) OCT_CHECK(matched == "numeric.kernel.heat2d");
 
     const auto inv = reg.inventory();
-    OCT_EQ(inv.size(), size_t(13));
+    OCT_EQ(inv.size(), size_t(14));
     for (const auto& i : inv) {
         OCT_CHECK(!i.name.empty());
         OCT_CHECK(!i.version.empty());
@@ -69,10 +71,11 @@ OCT_TEST(engine, every_builtin_module_self_check_executes_and_passes) {
     Registry reg;
     register_builtin_modules(reg);
     const auto results = reg.self_check_all();
-    OCT_EQ(results.size(), size_t(13));
+    OCT_EQ(results.size(), size_t(14));
     for (const auto& r : results) {
         OCT_NOTE(r.module << " -> " << (r.status.is_ok() ? "ok" : r.status.message));
-        OCT_CHECK_MSG(r.status.is_ok(), r.module << ": " << r.status.message);
+        OCT_CHECK_MSG(r.status.is_ok() || r.status.is_hardware_skip(),
+                      r.module << ": " << r.status.message);
     }
 }
 
@@ -116,10 +119,12 @@ OCT_TEST(engine, result_json_contract_is_honest) {
                             "\"fingerprint\"", "\"diagnostics\"", "\"elements\""})
         OCT_CHECK_MSG(js.find(key) != std::string::npos, "missing key " << key);
 
-    // Without a Fortran compiler the backend string must say so explicitly.
+    // Without a Fortran compiler the backend string and status must explicitly
+    // report UNSUPPORTED_HARDWARE_SKIP and refuse C++ fallback.
     if (!numerics::KernelLibrary::instance().fortran_available()) {
-        OCT_CHECK(r.backend.find("fortran unavailable") != std::string::npos);
-        OCT_CHECK(r.backend.find("degraded") != std::string::npos);
+        OCT_CHECK(r.hardware_skipped);
+        OCT_CHECK(r.status.is_hardware_skip());
+        OCT_CHECK(r.backend.find("UNSUPPORTED_HARDWARE_SKIP") != std::string::npos);
     }
 }
 

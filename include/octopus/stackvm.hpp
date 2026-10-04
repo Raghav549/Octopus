@@ -11,6 +11,7 @@
 
 #include "octopus/core.hpp"
 
+#include <array>
 #include <variant>
 
 namespace oct { class Module; }
@@ -35,6 +36,8 @@ struct Word {
 
 class Vm {
 public:
+    static constexpr size_t kNumRegisters = 16;
+
     explicit Vm(size_t memory_cells = 4096);
 
     // Compile Forth-ish text: `: sq dup * ;  5 sq .`
@@ -44,6 +47,10 @@ public:
 
     const std::vector<Word>& dictionary() const { return words_; }
     const std::vector<double>& data_stack() const { return stack_; }
+    const std::vector<double>& return_stack() const { return return_stack_; }
+    const std::array<double, kNumRegisters>& registers() const { return registers_; }
+    double get_register(size_t idx) const { return idx < kNumRegisters ? registers_[idx] : 0.0; }
+    void set_register(size_t idx, double v) { if (idx < kNumRegisters) registers_[idx] = v; }
     std::string output() const { return output_; }
     std::vector<double>& memory() { return memory_; }
     void reset();
@@ -56,13 +63,14 @@ private:
     Status resolve_control_flow();
     const Word* find(std::string_view name) const;
 
-    std::vector<double>        stack_;
-    std::vector<double>        return_stack_;
-    std::vector<double>        memory_;
-    std::vector<Word>          words_;
-    std::vector<Instruction>   main_;
-    std::string                output_;
-    size_t                     stack_limit_ = 4096;
+    std::vector<double>                  stack_;
+    std::vector<double>                  return_stack_;
+    std::array<double, kNumRegisters>    registers_{};
+    std::vector<double>                  memory_;
+    std::vector<Word>                    words_;
+    std::vector<Instruction>             main_;
+    std::string                          output_;
+    size_t                               stack_limit_ = 4096;
 };
 
 std::shared_ptr<oct::Module> make_stackvm_module();

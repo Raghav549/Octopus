@@ -15,13 +15,14 @@ namespace oct {
 // ---------------------------------------------------------------------------
 const char* to_string(Code c) noexcept {
     switch (c) {
-        case Code::Ok:          return "ok";
-        case Code::Rejected:    return "rejected";
-        case Code::Degraded:    return "degraded";
-        case Code::Invalid:     return "invalid";
-        case Code::Unavailable: return "unavailable";
-        case Code::Timeout:     return "timeout";
-        case Code::Internal:    return "internal";
+        case Code::Ok:           return "ok";
+        case Code::Rejected:     return "rejected";
+        case Code::Degraded:     return "degraded";
+        case Code::HardwareSkip: return "UNSUPPORTED_HARDWARE_SKIP";
+        case Code::Invalid:      return "invalid";
+        case Code::Unavailable:  return "unavailable";
+        case Code::Timeout:      return "timeout";
+        case Code::Internal:     return "internal";
     }
     return "unknown";
 }

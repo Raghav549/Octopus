@@ -15,7 +15,9 @@
 #include "octopus/numerics.hpp"
 #include "octopus/piet.hpp"
 #include "octopus/prolog.hpp"
+#include "octopus/router.hpp"
 #include "octopus/tokenizer.hpp"
+#include "octopus/universe.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -108,6 +110,7 @@ int main(int argc, char** argv) {
         {"gas", {{"ratio", 1.4}}, 1.0},
         {"linsolve", {{"n", 64}}, 1.0},
         {"cavity2d", {{"n", 32}, {"re", 100}}, 5.0},
+        {"tensor_field", {{"n", 24}, {"mass", 1.2}}, 1.0},
     };
     for (const Case& c : cases) {
         auto k = numerics::KernelLibrary::instance().find(c.kernel);
@@ -178,9 +181,8 @@ int main(int argc, char** argv) {
         const std::string dir = "third_party/llama.cpp/models/";
         auto vocab = tokenizer::Vocab::load(dir + "ggml-vocab-gpt-2.gguf");
         if (!vocab) {
-            std::fprintf(stderr, "octbench: tokenizer fixture unavailable\n");
-            if (require) ++failures;
-            row("layer", "tokenizer.bpe", "vocab=gpt-2", 0, {0, 0, 0}, "skipped: fixture absent");
+            row("layer", "tokenizer.bpe", "vocab=gpt-2", 0, {0, 0, 0},
+                "UNSUPPORTED_HARDWARE_SKIP: llama.cpp fixture absent");
         } else {
             // One warm-up call: the first encode builds the merge-rank table
             // (one-time cost, reported separately by the min/max spread).
@@ -226,6 +228,34 @@ int main(int argc, char** argv) {
             detail = "png_bytes=" + std::to_string(raster.rgb.size()) + "; fp=" + raster.fingerprint().substr(0, 16);
         }
         row("layer", "piet.render.png", "512x512", repeats, summarise(times), detail);
+    }
+    {
+        std::vector<double> times;
+        std::string detail;
+        router::Router r;
+        for (int rep = 0; rep < repeats; ++rep) {
+            const auto t0 = Clock::now();
+            auto rt = r.classify("compute covariant riemannian tensor field curvature");
+            times.push_back(ms_since(t0));
+            if (rt.kind != router::TaskKind::Numeric ||
+                rt.capability != "numeric.kernel.tensor_field") ++failures;
+            detail = "w_sha256=" + r.telemetry().weights_sha256.substr(0, 16) +
+                     "; conf=" + std::to_string(rt.confidence);
+        }
+        row("layer", "router.micro_neural", "64x32x10_GELU", repeats, summarise(times), detail);
+    }
+    {
+        std::vector<double> times;
+        std::string detail;
+        std::vector<double> coords(32 * 32 * 4, 0.5);
+        for (int rep = 0; rep < repeats; ++rep) {
+            const auto t0 = Clock::now();
+            auto fr = universe::translate_coordinates_to_piet(coords, 32, 32, 0.25);
+            times.push_back(ms_since(t0));
+            if (!fr.ok() || !fr->sld_report.sound) ++failures;
+            detail = "fp=" + (fr.ok() ? fr->canvas.fingerprint().substr(0, 16) : std::string("err"));
+        }
+        row("layer", "universe.piet_projection", "32x32x4", repeats, summarise(times), detail);
     }
 
     if (require && failures > 0) {

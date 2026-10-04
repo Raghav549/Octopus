@@ -157,3 +157,42 @@ OCT_TEST(router, fails_closed_when_a_layer_cannot_serve) {
     auto bad_kernel = r.execute("kernel:nosuchkernel n=4");
     OCT_CHECK(!bad_kernel);
 }
+
+OCT_TEST(router, inline_micro_neural_router_learns_and_modulates_by_speed) {
+    router::Router r;
+    const auto tel0 = r.telemetry();
+    OCT_CHECK(tel0.training_steps > 100);
+    OCT_CHECK(tel0.curriculum_accuracy >= 0.90);
+    OCT_CHECK(!tel0.weights_sha256.empty());
+
+    // 64-D prompt embedding vector must be non-zero for a valid prompt
+    std::string top_feat;
+    int kern = -1;
+    const auto emb = r.embed("solve covariant riemannian tensor_field bianchi", &top_feat, &kern);
+    double norm2 = 0.0;
+    for (double v : emb) norm2 += v * v;
+    OCT_CHECK(norm2 > 0.1);
+    OCT_CHECK(!top_feat.empty());
+    OCT_EQ(kern, 8); // tensor_field index
+
+    // Online backpropagation step updates weights and preserves/boosts confidence
+    const double conf_before = r.classify("covariant riemannian tensor_field").confidence;
+    const double loss = r.learn("covariant riemannian tensor_field", router::TaskKind::Numeric, 0.0001, 0.10);
+    OCT_CHECK(loss >= 0.0);
+    const double conf_after = r.classify("covariant riemannian tensor_field").confidence;
+    OCT_CHECK(conf_after >= conf_before - 1e-6);
+    OCT_CHECK(r.telemetry().weights_sha256 != tel0.weights_sha256);
+
+    // Seal weights inside an INTERCAL core shield envelope and unseal round-trip
+    intercal::AuditChain chain;
+    const auto shield = r.seal_weights("router-test-key", &chain);
+    OCT_CHECK(chain.verify());
+    auto unsealed = intercal::unseal_code_structure(shield, "router-test-key", &chain);
+    OCT_CHECK(bool(unsealed));
+
+    // Render neural router synapses onto a Piet 20-colour visual canvas
+    const piet::Raster syn = r.render_synapses("what is the heat equation?", 16, 8);
+    OCT_EQ(syn.width, 16);
+    OCT_EQ(syn.height, 8);
+    OCT_EQ(syn.codes.size(), size_t(128));
+}

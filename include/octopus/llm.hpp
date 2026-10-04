@@ -1,11 +1,12 @@
 // Octopus Hybrid AI Engine -- local LLM host layer.
 //
-// Wraps llama.cpp when the engine was configured with -DOCT_WITH_LLAMA=ON and a
-// prebuilt llama.cpp tree was found; otherwise it exposes a deterministic stub
-// backend that is *labelled as such* everywhere (backend name, JSON output,
-// module limitations). The engine never pretends a model answered when none was
-// loaded: generate() returns Status::unavailable in that case, and the CLI
-// reports it as an unavailable capability rather than inventing an answer.
+// FORCED MULTI-LANGUAGE BINDING REGIME:
+// Optional C++ stub fallbacks (`allow_stub_fallback`, `"stub-answer{...}"`)
+// are strictly banned. GGUF metadata inspection and vocabulary tokenization
+// use the engine's native GGUF reader and BPE tokenizer, while live token
+// generation requires the native llama.cpp inference backend. When the
+// llama.cpp backend or hardware is absent on the build host, live inference
+// blocks return Status::hardware_skip ("UNSUPPORTED_HARDWARE_SKIP").
 // SPDX-License-Identifier: MIT
 #pragma once
 
@@ -31,36 +32,38 @@ struct ModelFacts {
 };
 
 struct GenerateParams {
-    int64_t max_tokens = 64;
-    double  temperature = 0.0;     // 0 = greedy
+    int64_t  max_tokens = 64;
+    double   temperature = 0.0;     // 0 = greedy
     uint64_t seed = 0x9E3779B97F4A7C15ULL;
-    int64_t top_k = 0;             // 0 = disabled
-    double  top_p = 1.0;
+    int64_t  top_k = 0;             // 0 = disabled
+    double   top_p = 1.0;
 };
 
 struct BackendInfo {
-    bool        compiled = false;      // OCT_WITH_LLAMA
-    bool        available = false;     // library present and loadable
-    bool        stub = true;           // true => deterministic stub, not a model
+    bool        compiled = false;
+    bool        available = false;
+    bool        hardware_skipped = false;
     std::string name;
     std::string version;
-    std::string honesty;               // one-line truthful description
+    std::string honesty;
     Json        to_json() const;
 };
 
 class Host {
 public:
     Host();
+    ~Host();
+    Host(const Host&) = delete;
+    Host& operator=(const Host&) = delete;
 
-    // Reads model metadata with the engine's own GGUF reader (no llama.cpp
-    // needed) so capability reporting works even without the backend.
+    // Reads model metadata with the engine's own GGUF reader.
     Outcome<ModelFacts> inspect(const std::string& path) const;
 
-    // Loads a model for generation. Without the llama.cpp backend this fails
-    // with Status::unavailable (unless the deterministic stub is enabled).
-    Status load(const std::string& path, bool allow_stub_fallback = false);
+    // Loads a model for generation. Without the llama.cpp backend this returns
+    // Status::hardware_skip ("UNSUPPORTED_HARDWARE_SKIP"); C++ stub fallbacks
+    // are strictly banned.
+    Status load(const std::string& path);
     bool   loaded() const { return loaded_; }
-    bool   using_stub() const { return stub_mode_; }
     const ModelFacts& facts() const { return facts_; }
     const std::string& path() const { return path_; }
 
@@ -72,17 +75,13 @@ public:
     Json        report() const;
 
 private:
-    bool         loaded_ = false;
-    bool         stub_mode_ = false;
-    std::string  path_;
-    ModelFacts   facts_;
+    bool             loaded_ = false;
+    std::string      path_;
+    ModelFacts       facts_;
     tokenizer::Vocab vocab_;
-    bool         have_vocab_ = false;
-    Rng          rng_;
-    // Opaque handles for the optional llama.cpp backend (defined only when
-    // OCT_HAVE_LLAMA is set; kept as void* so this header has no dependency).
-    void*        llama_model_ = nullptr;
-    void*        llama_context_ = nullptr;
+    bool             have_vocab_ = false;
+    void*            llama_model_ = nullptr;
+    void*            llama_context_ = nullptr;
 };
 
 std::shared_ptr<oct::Module> make_llm_module();

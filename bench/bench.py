@@ -34,8 +34,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if not args.no_build:
-        cfg = run(["cmake", "-B", "build", "-S", ".", "-DCMAKE_BUILD_TYPE=Release",
-                   "-DOCT_WITH_LLAMA=OFF"])
+        cfg = run(["cmake", "-B", "build", "-S", ".", "-DCMAKE_BUILD_TYPE=Release"])
         if cfg.returncode != 0:
             print(cfg.stderr[-3000:], file=sys.stderr)
             return 1

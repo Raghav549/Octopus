@@ -3,6 +3,8 @@
 #include "octopus/occam.hpp"
 
 #include "octopus/module.hpp"
+#include "octopus/smalltalk.hpp"
+#include "octopus/stackvm.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -87,6 +89,75 @@ Verdict parallel_verify(const std::vector<Strategy>& strategies, double toleranc
     v.winner = strategies[winner].name;
     v.agreed = spread <= tolerance;
     return v;
+}
+
+Json TriadExecution::to_json() const {
+    Json j;
+    j.begin_object();
+    j.field("ok", ok);
+    j.field("forth_stack_top", forth_stack_top);
+    j.field("smalltalk_reply", smalltalk_reply);
+    j.field("channel_messages", channel_messages);
+    j.key("forth_registers");
+    j.begin_array();
+    for (double r : forth_registers) j.value(r);
+    j.end_array();
+    j.key("occam_verdict");
+    j.raw_json(occam_verdict.to_json().str());
+    j.end_object();
+    return j;
+}
+
+TriadExecution coordinate_triad(std::string_view forth_program, double seed_value) {
+    TriadExecution out;
+    Channel<double> csp_chan(8);
+
+    // 1. Occam parallel CSP workers compute consensus value and push into CSP channel.
+    std::vector<Strategy> strategies = {
+        {"occam.worker.alpha", [seed_value, &csp_chan]() -> Outcome<double> {
+            const double val = seed_value * seed_value + 2.0 * seed_value + 1.0;
+            csp_chan.send(val);
+            return val;
+        }},
+        {"occam.worker.beta", [seed_value, &csp_chan]() -> Outcome<double> {
+            const double val = (seed_value + 1.0) * (seed_value + 1.0);
+            csp_chan.send(val);
+            return val;
+        }},
+    };
+    out.occam_verdict = parallel_verify(strategies, 1e-12);
+    csp_chan.close();
+
+    double chan_sum = 0.0;
+    while (auto msg = csp_chan.recv()) {
+        chan_sum += *msg;
+        ++out.channel_messages;
+    }
+
+    // 2. Forth stack + hardware register VM processes the CSP channel state.
+    stackvm::Vm vm;
+    vm.set_register(0, out.occam_verdict.value);
+    vm.set_register(1, chan_sum);
+    const std::string prog = forth_program.empty()
+        ? "r0@ r1@ + dup r2! 2 / r3! r3@"
+        : std::string(forth_program);
+    if (vm.compile(prog).ok() && vm.run().ok()) {
+        if (!vm.data_stack().empty()) out.forth_stack_top = vm.data_stack().back();
+        out.forth_registers.assign(vm.registers().begin(), vm.registers().begin() + 4);
+    }
+
+    // 3. Smalltalk dynamic message-passing actor coordinates and certifies triad state.
+    smalltalk::ActorSystem actors;
+    actors.spawn("triad.cell", [](const std::string& selector, const smalltalk::Args& args) -> Outcome<std::string> {
+        if (selector == "coordinate" && !args.empty()) {
+            return "triad-ack:" + args[0];
+        }
+        return Status::invalid("unknown selector");
+    });
+    auto reply = actors.send("triad.cell", "coordinate", {std::to_string(out.forth_stack_top)});
+    if (reply.ok()) out.smalltalk_reply = *reply;
+    out.ok = out.occam_verdict.agreed && reply.ok();
+    return out;
 }
 
 // ---------------------------------------------------------------------------

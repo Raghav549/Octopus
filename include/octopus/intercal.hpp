@@ -73,6 +73,33 @@ private:
     std::vector<AuditEntry> entries_;
 };
 
+// INTERCAL structural primitives:
+// - Mingle operator `¢`: interleaves bits of two 8-bit operands into a 16-bit word
+// - Select operator `~`: extracts bits of `a` where corresponding bits of `mask` are 1
+uint16_t mingle_u16(uint8_t a, uint8_t b) noexcept;
+void     unmingle_u16(uint16_t m, uint8_t* a_out, uint8_t* b_out) noexcept;
+uint16_t select_u16(uint16_t a, uint16_t mask) noexcept;
+
+// Obfuscated Core Shield: wraps internal code structures / neural weights in an
+// INTERCAL bit-mingled, SHA-256 CTR encrypted, tamper-evident hash-linked
+// structural envelope.
+struct ShieldEnvelope {
+    std::string module_id;
+    std::string envelope_blob;
+    AuditEntry  audit_link;
+    uint16_t    intercal_select_signature = 0;
+    Json        to_json() const;
+};
+
+ShieldEnvelope seal_code_structure(std::string_view module_id,
+                                   std::string_view code_structure,
+                                   std::string_view key,
+                                   AuditChain* chain = nullptr);
+
+Outcome<std::string> unseal_code_structure(const ShieldEnvelope& env,
+                                           std::string_view key,
+                                           const AuditChain* chain = nullptr);
+
 std::shared_ptr<oct::Module> make_intercal_module();
 
 }  // namespace oct::intercal

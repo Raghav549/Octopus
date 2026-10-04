@@ -204,6 +204,99 @@ Json palette_legend() {
     return j;
 }
 
+Json CodelTrace::to_json() const {
+    Json j;
+    j.begin_object();
+    j.field("codel_transitions", codel_transitions);
+    j.field("canvas_fingerprint", canvas_fingerprint);
+    j.key("ops_executed");
+    j.begin_array();
+    for (const auto& op : ops_executed) j.value(op);
+    j.end_array();
+    j.key("stack_snapshot");
+    j.begin_array();
+    for (int64_t v : stack_snapshot) j.value(v);
+    j.end_array();
+    j.end_object();
+    return j;
+}
+
+Raster render_synapse_canvas(std::span<const double> weights,
+                             std::span<const double> activations,
+                             int width, int height) {
+    const int w = std::max(4, width);
+    const int h = std::max(4, height);
+    std::vector<double> combined(size_t(w * h), 0.0);
+    double lo = -1.0, hi = 1.0;
+    if (!weights.empty() || !activations.empty()) {
+        lo = 1e30;
+        hi = -1e30;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t idx = size_t(y * w + x);
+                const double wt = weights.empty() ? 0.0 : weights[idx % weights.size()];
+                const double act = activations.empty() ? 1.0 : activations[size_t(x) % activations.size()];
+                const double val = std::tanh(wt * act + 0.15 * std::sin(double(x + y)));
+                combined[idx] = val;
+                lo = std::min(lo, val);
+                hi = std::max(hi, val);
+            }
+        }
+        if (hi - lo < 1e-9) { lo = -1.0; hi = 1.0; }
+    }
+    return render_state(combined, w, h, lo, hi);
+}
+
+CodelTrace execute_canvas_pathway(const Raster& canvas, int64_t max_steps) {
+    CodelTrace tr;
+    tr.canvas_fingerprint = canvas.fingerprint();
+    if (canvas.codes.empty() || canvas.width <= 0 || canvas.height <= 0) return tr;
+
+    static const char* kOpTable[6][3] = {
+        {"nop",  "push", "pop"},
+        {"add",  "sub",  "mul"},
+        {"div",  "mod",  "not"},
+        {"gt",   "ptr",  "swi"},
+        {"dup",  "roll", "in_n"},
+        {"in_c", "out_n","out_c"},
+    };
+
+    std::vector<int64_t> st;
+    int prev_code = canvas.codes[0];
+    const size_t limit = std::min<size_t>(canvas.codes.size(), size_t(std::max<int64_t>(1, max_steps)));
+    for (size_t i = 1; i < limit; ++i) {
+        const int cur = canvas.codes[i];
+        if (prev_code >= 0 && prev_code < 18 && cur >= 0 && cur < 18 && cur != prev_code) {
+            const int h0 = prev_code / 3, l0 = prev_code % 3;
+            const int h1 = cur / 3,       l1 = cur % 3;
+            const int dh = (h1 - h0 + 6) % 6;
+            const int dl = (l1 - l0 + 3) % 3;
+            const char* op = kOpTable[dh][dl];
+            tr.ops_executed.push_back(op);
+            ++tr.codel_transitions;
+            if (std::strcmp(op, "push") == 0) {
+                st.push_back(int64_t(h0 + l0 + 1));
+            } else if (std::strcmp(op, "pop") == 0 && !st.empty()) {
+                st.pop_back();
+            } else if (std::strcmp(op, "dup") == 0 && !st.empty()) {
+                st.push_back(st.back());
+            } else if (std::strcmp(op, "add") == 0 && st.size() >= 2) {
+                const int64_t a = st.back(); st.pop_back();
+                st.back() += a;
+            } else if (std::strcmp(op, "sub") == 0 && st.size() >= 2) {
+                const int64_t a = st.back(); st.pop_back();
+                st.back() -= a;
+            } else if (std::strcmp(op, "mul") == 0 && st.size() >= 2) {
+                const int64_t a = st.back(); st.pop_back();
+                st.back() *= a;
+            }
+        }
+        prev_code = cur;
+    }
+    tr.stack_snapshot = std::move(st);
+    return tr;
+}
+
 // ---------------------------------------------------------------------------
 // Module wrapper
 // ---------------------------------------------------------------------------

@@ -16,7 +16,9 @@
 
 #include "octopus/core.hpp"
 #include "octopus/intercal.hpp"
+#include "octopus/lisp.hpp"
 #include "octopus/prolog.hpp"
+#include "octopus/smalltalk.hpp"
 
 #include <functional>
 
@@ -71,6 +73,21 @@ public:
     int64_t     restarts() const { return restarts_; }
     Json        report() const;
     const intercal::AuditChain& audit() const { return audit_; }
+
+    // Autonomous Agent Supervisor: orchestrates the Smalltalk live-cell
+    // messaging watchdog with automated LISP code rewrites and Prolog SLD
+    // invariant sweeps to heal internal logic exceptions live without stopping
+    // the primary runtime engine loop.
+    smalltalk::ActorSystem::LiveHealReport heal_actor_exception(
+        smalltalk::ActorSystem& actors,
+        lisp::Interp& interp,
+        prolog::KnowledgeBase& kb,
+        const std::string& actor_name,
+        const std::string& selector,
+        const smalltalk::Args& args,
+        const std::string& lisp_symbol,
+        const std::string& lisp_patch_expr,
+        const std::string& prolog_invariant);
 
 private:
     struct InvariantBinding { const prolog::KnowledgeBase* kb; InvariantCheck inv; };

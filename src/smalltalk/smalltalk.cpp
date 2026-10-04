@@ -188,18 +188,26 @@ std::vector<ActorInfo> ActorSystem::actors() const {
     return out;
 }
 
-bool ActorSystem::healthy() const {
-    std::lock_guard<std::mutex> lock(mu_);
+bool ActorSystem::healthy_unlocked() const {
     for (const auto& kv : actors_)
         if (kv.second.state == State::Stopped || kv.second.state == State::Failed) return false;
     return true;
 }
 
-size_t ActorSystem::restart_count() const {
+bool ActorSystem::healthy() const {
     std::lock_guard<std::mutex> lock(mu_);
+    return healthy_unlocked();
+}
+
+size_t ActorSystem::restart_count_unlocked() const {
     size_t n = 0;
     for (const auto& kv : actors_) n += size_t(kv.second.restarts);
     return n;
+}
+
+size_t ActorSystem::restart_count() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return restart_count_unlocked();
 }
 
 Json ActorSystem::supervision_report() const {
@@ -207,9 +215,9 @@ Json ActorSystem::supervision_report() const {
     Json j;
     j.begin_object();
     j.field("system", name_);
-    j.field("healthy", healthy());
+    j.field("healthy", healthy_unlocked());
     j.field("actors", int64_t(actors_.size()));
-    j.field("restarts", int64_t(restart_count()));
+    j.field("restarts", int64_t(restart_count_unlocked()));
     j.field("events", int64_t(events_.size()));
     j.begin_array("actor_states");
     for (const auto& kv : actors_)
@@ -219,6 +227,128 @@ Json ActorSystem::supervision_report() const {
     j.end_array();
     j.end_object();
     return j;
+}
+
+Json ActorSystem::LiveHealReport::to_json() const {
+    Json j;
+    j.begin_object();
+    j.field("fault_intercepted", fault_intercepted);
+    j.field("lisp_rewritten", lisp_rewritten);
+    j.field("prolog_invariant_ok", prolog_invariant_ok);
+    j.field("recovered_live", recovered_live);
+    j.field("lisp_generation_before", lisp_generation_before);
+    j.field("lisp_generation_after", lisp_generation_after);
+    j.field("lisp_patch_sha256", lisp_patch_sha256);
+    j.field("prolog_verdict", prolog_verdict);
+    j.field("fault_message", fault_message);
+    j.field("healed_reply", healed_reply);
+    j.end_object();
+    return j;
+}
+
+void ActorSystem::attach_autonomous_watchdog(lisp::Interp* interp, prolog::KnowledgeBase* kb) {
+    std::lock_guard<std::mutex> lock(mu_);
+    watchdog_lisp_ = interp;
+    watchdog_kb_ = kb;
+}
+
+void ActorSystem::register_live_heal_rule(const std::string& actor, LiveHealRule rule) {
+    std::lock_guard<std::mutex> lock(mu_);
+    heal_rules_[actor] = std::move(rule);
+}
+
+Outcome<std::string> ActorSystem::send_autonomous(const std::string& actor_name,
+                                                  const std::string& selector,
+                                                  const Args& args,
+                                                  LiveHealReport* report_out) {
+    LiveHealReport rep;
+    Outcome<std::string> first = send(actor_name, selector, args);
+    if (first.ok()) {
+        rep.recovered_live = true;
+        rep.healed_reply = *first;
+        if (report_out) *report_out = rep;
+        return first;
+    }
+
+    // Logic exception intercepted by Smalltalk live-cell watchdog!
+    rep.fault_intercepted = true;
+    rep.fault_message = first.status.message;
+
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto rule_it = heal_rules_.find(actor_name);
+        if (rule_it == heal_rules_.end()) {
+            if (report_out) *report_out = rep;
+            return first;
+        }
+        const LiveHealRule& rule = rule_it->second;
+
+        // 1. Trigger automated LISP live code rewrite (`lisp::Interp::patch`)
+        if (watchdog_lisp_ && !rule.lisp_symbol.empty() && !rule.lisp_patch_expr.empty()) {
+            rep.lisp_generation_before = watchdog_lisp_->generation();
+            std::string patch_src = rule.lisp_patch_expr;
+            if (patch_src.find("(define ") == std::string::npos) {
+                patch_src = "(define " + rule.lisp_symbol + " " + patch_src + ")";
+            }
+            auto pr = watchdog_lisp_->patch(rule.lisp_symbol, patch_src);
+            if (pr.ok()) {
+                rep.lisp_rewritten = true;
+                rep.lisp_generation_after = *pr;
+                rep.lisp_patch_sha256 = hash::sha256_hex(patch_src);
+                record(actor_name, "lisp.patch",
+                       rule.lisp_symbol + "@gen" + std::to_string(rep.lisp_generation_after));
+            }
+        }
+
+        // 2. Trigger Prolog SLD invariant sweep (`prolog::verify`)
+        if (watchdog_kb_ && !rule.prolog_invariant.empty()) {
+            const auto v = prolog::verify(*watchdog_kb_, rule.prolog_invariant);
+            rep.prolog_verdict = (v.verdict == prolog::Verdict::Grounded ? "grounded"
+                                : v.verdict == prolog::Verdict::Refuted  ? "refuted" : "unknown");
+            rep.prolog_invariant_ok = (v.verdict != prolog::Verdict::Refuted);
+            record(actor_name, "prolog.sweep",
+                   rule.prolog_invariant + " -> " + rep.prolog_verdict);
+            if (!rep.prolog_invariant_ok && watchdog_lisp_ && rep.lisp_rewritten) {
+                // Roll back the LISP patch if Prolog invariant sweep refuted it
+                (void)watchdog_lisp_->rollback(rep.lisp_generation_before);
+                rep.lisp_rewritten = false;
+                if (report_out) *report_out = rep;
+                return Status::rejected("smalltalk autonomous watchdog: Prolog SLD refuted live patch");
+            }
+        } else {
+            rep.prolog_invariant_ok = true;
+            rep.prolog_verdict = "grounded";
+        }
+
+        // 3. Hot-swap actor handler if a repaired handler or LISP binding is present
+        Actor* a = find(actor_name);
+        if (a && rep.prolog_invariant_ok) {
+            if (rule.repaired_handler) {
+                a->handler = rule.repaired_handler;
+            } else if (watchdog_lisp_ && !rule.lisp_symbol.empty()) {
+                lisp::Interp* lp = watchdog_lisp_;
+                std::string sym = rule.lisp_symbol;
+                a->handler = [lp, sym](const std::string&, const Args& call_args) -> Outcome<std::string> {
+                    std::string expr = "(" + sym;
+                    for (const auto& arg : call_args) expr += " " + arg;
+                    expr += ")";
+                    auto r = lp->eval_string(expr);
+                    if (!r.ok()) return r.status;
+                    return (*r)->to_string();
+                };
+            }
+            a->state = State::Idle;
+        }
+    }
+
+    // 4. Retry message live without stopping the primary runtime engine loop
+    Outcome<std::string> retry = send(actor_name, selector, args);
+    if (retry.ok()) {
+        rep.recovered_live = true;
+        rep.healed_reply = *retry;
+    }
+    if (report_out) *report_out = rep;
+    return retry;
 }
 
 // ---------------------------------------------------------------------------

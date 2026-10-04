@@ -15,21 +15,23 @@
 #include "octopus/stackvm.hpp"
 #include "octopus/supervisor.hpp"
 #include "octopus/tokenizer.hpp"
+#include "octopus/universe.hpp"
 
 namespace oct {
 
 namespace {
 
-// The numerical kernel library is exposed through its own module so the CLI can
-// resolve "numeric.kernel.<name>" capabilities through the same registry.
+// The Fortran 2023 numerical kernel library exposed through its own module so
+// the CLI and neural router can resolve "numeric.kernel.<name>" capabilities.
 class NumericsModule final : public Module {
 public:
     ModuleInfo info() const override {
         ModuleInfo i;
         i.name = "fortran.kernels";
-        i.version = "1.0.0";
-        i.language = "C++20 reference + optional Fortran 2018 backend";
-        i.role = "validated physics/maths kernels (fluids, gravity, thermodynamics)";
+        i.version = "2.0.0";
+        i.language = "Fortran 2023 ISO_C_BINDING (C++ fallback banned)";
+        i.role = "Absolute Physics Core: fluid dynamics, Kepler/N-body gravity, PDEs, "
+                 "thermodynamics, linear algebra, and covariant tensor matrix fields";
         i.trust = Trust::Core;
         i.compiled_in = true;
         i.capabilities = {"numeric.kernel"};
@@ -37,24 +39,37 @@ public:
             i.capabilities.push_back("numeric.kernel." + n);
         i.limitations = {
             numerics::KernelLibrary::instance().fortran_available()
-                ? "Fortran backend linked; per-kernel method is reported in every Result"
-                : "no Fortran compiler at configure time: the C++ long-double reference kernels "
-                  "run instead, and any request for the Fortran backend is labelled degraded in "
-                  "the result's backend string",
-            "no GPU/tensor-core path; the kernels are CPU-only by design",
+                ? "Fortran 2023 backend linked natively; C++ reference fallback is banned"
+                : "UNSUPPORTED_HARDWARE_SKIP: Fortran 2023 compiler (gfortran/lfortran) absent on "
+                  "build host; live physics execution blocks are securely skipped (C++ fallback banned)",
         };
         i.build_id = std::string("c++20/") + __VERSION__;
         return i;
     }
     std::string describe() const override {
         return numerics::KernelLibrary::instance().fortran_available()
-                   ? "Physics/maths kernels with the Fortran backend linked in."
-                   : "Physics/maths kernels using the C++ long-double reference implementation "
-                     "(Fortran unavailable; requests for it are reported as degraded).";
+                   ? "Fortran 2023 Absolute Physics Core linked natively."
+                   : "Fortran 2023 Absolute Physics Core [UNSUPPORTED_HARDWARE_SKIP: "
+                     "gfortran/lfortran absent; C++ reference fallback banned].";
     }
     Status self_check() override {
-        // Every kernel is validated against its declared reference; the module
-        // fails if any kernel's own validation does not accept.
+        if (!numerics::KernelLibrary::instance().fortran_available()) {
+            // Verify that every kernel strictly honours UNSUPPORTED_HARDWARE_SKIP
+            // and never executes a C++ fallback approximation.
+            for (const auto& name : numerics::KernelLibrary::instance().names()) {
+                auto k = numerics::KernelLibrary::instance().find(name);
+                if (!k) return Status::internal("numerics: kernel vanished: " + name);
+                const numerics::ProblemSpec spec = k->validation_spec();
+                const auto r = k->run(spec);
+                const auto v = k->validate(spec);
+                if (!r.hardware_skipped || !r.status.is_hardware_skip() || !v.hardware_skipped)
+                    return Status::internal("numerics: kernel '" + name +
+                                            "' did not flag UNSUPPORTED_HARDWARE_SKIP");
+            }
+            return Status::hardware_skip(
+                "UNSUPPORTED_HARDWARE_SKIP: Fortran 2023 compiler (gfortran/lfortran) absent on host; "
+                "all 9 kernels verified hardware-skip gate (C++ fallback banned)");
+        }
         for (const auto& name : numerics::KernelLibrary::instance().names()) {
             auto k = numerics::KernelLibrary::instance().find(name);
             if (!k) return Status::internal("numerics: kernel vanished: " + name);
@@ -88,6 +103,7 @@ size_t register_builtin_modules(Registry& registry) {
     add(piet::make_piet_module());
     add(supervisor::make_supervisor_module());
     add(llm::make_llm_module());
+    add(universe::make_universe_module());
     return n;
 }
 

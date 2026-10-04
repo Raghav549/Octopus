@@ -10,6 +10,8 @@
 #pragma once
 
 #include "octopus/core.hpp"
+#include "octopus/lisp.hpp"
+#include "octopus/prolog.hpp"
 
 #include <functional>
 #include <map>
@@ -72,6 +74,46 @@ public:
     size_t restart_count() const;
     Json   supervision_report() const;
 
+    // -----------------------------------------------------------------------
+    // Autonomous Agent Supervisor Watchdog (Smalltalk + LISP + Prolog):
+    // When a logic exception occurs in a live-cell actor, triggers automated
+    // LISP code rewrites (`lisp::Interp::patch`) and Prolog SLD invariant
+    // sweeps (`prolog::verify`) to heal internal bugs live without stopping
+    // the primary runtime engine loop.
+    // -----------------------------------------------------------------------
+    struct LiveHealRule {
+        std::string           lisp_symbol;         // e.g. "cell-compute"
+        std::string           lisp_patch_expr;     // e.g. "(lambda (x) (/ 100 (+ x 1)))"
+        std::string           prolog_invariant;    // e.g. "sound_backend(fortran2023)"
+        Handler               repaired_handler;    // optional hot-swapped C++ / LISP handler
+    };
+
+    struct LiveHealReport {
+        bool        fault_intercepted = false;
+        bool        lisp_rewritten = false;
+        bool        prolog_invariant_ok = false;
+        bool        recovered_live = false;
+        int64_t     lisp_generation_before = 0;
+        int64_t     lisp_generation_after = 0;
+        std::string lisp_patch_sha256;
+        std::string prolog_verdict;
+        std::string fault_message;
+        std::string healed_reply;
+        Json        to_json() const;
+    };
+
+    void attach_autonomous_watchdog(lisp::Interp* interp, prolog::KnowledgeBase* kb);
+    void register_live_heal_rule(const std::string& actor, LiveHealRule rule);
+
+    // Sends a message through the Smalltalk live-cell layer; if a logic fault
+    // occurs and an autonomous watchdog rule is registered, rewrites the LISP
+    // AST, sweeps Prolog invariants, and retries the message live without
+    // stopping the runtime loop.
+    Outcome<std::string> send_autonomous(const std::string& actor,
+                                         const std::string& selector,
+                                         const Args& args = {},
+                                         LiveHealReport* report_out = nullptr);
+
 private:
     struct Actor {
         std::string  name;
@@ -85,12 +127,17 @@ private:
     };
     void record(const std::string& actor, const std::string& kind, const std::string& detail);
     Actor* find(const std::string& name);
+    bool   healthy_unlocked() const;
+    size_t restart_count_unlocked() const;
 
-    std::string                  name_;
-    std::map<std::string, Actor> actors_;
-    std::vector<SupervisionEvent> events_;
-    mutable std::mutex           mu_;
-    uint64_t                     sequence_ = 0;
+    std::string                          name_;
+    std::map<std::string, Actor>         actors_;
+    std::map<std::string, LiveHealRule>  heal_rules_;
+    lisp::Interp*                        watchdog_lisp_ = nullptr;
+    prolog::KnowledgeBase*               watchdog_kb_ = nullptr;
+    std::vector<SupervisionEvent>        events_;
+    mutable std::mutex                   mu_;
+    uint64_t                             sequence_ = 0;
 };
 
 std::shared_ptr<oct::Module> make_smalltalk_module();

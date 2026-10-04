@@ -66,12 +66,14 @@ int run_all(const std::string& filter, bool json_output, bool list_only) {
         cc.messages.clear();
 
         std::string skip_reason;
-        if (c.require_llama && !g_have_llama) skip_reason = "llama.cpp not available in this build";
-        else if (c.require_fortran && !g_have_fortran) skip_reason = "Fortran backend not compiled";
+        if (c.require_llama && !g_have_llama)
+            skip_reason = "UNSUPPORTED_HARDWARE_SKIP: llama.cpp runtime/hardware not available in this build";
+        else if (c.require_fortran && !g_have_fortran)
+            skip_reason = "UNSUPPORTED_HARDWARE_SKIP: Fortran 2023 compiler (gfortran/lfortran) absent on host; C++ fallback banned";
 
         if (!skip_reason.empty()) {
             skipped++;
-            std::cout << "[ SKIP ] " << full << " (" << skip_reason << ")\n";
+            std::cout << "[UNSUPPORTED_HARDWARE_SKIP] " << full << " (" << skip_reason << ")\n";
             continue;
         }
 
@@ -81,7 +83,7 @@ int run_all(const std::string& filter, bool json_output, bool list_only) {
             c.fn();
         } catch (const SkipTest& s) {
             skipped++;
-            std::cout << "[ SKIP ] " << full << " (" << s.reason << ")\n";
+            std::cout << "[UNSUPPORTED_HARDWARE_SKIP] " << full << " (" << s.reason << ")\n";
             continue;
         } catch (const std::exception& e) {
             crashed = true;
@@ -124,6 +126,7 @@ int run_all(const std::string& filter, bool json_output, bool list_only) {
         j.field("passed", passed);
         j.field("failed", failed);
         j.field("skipped", skipped);
+        j.field("unsupported_hardware_skip", skipped);
         j.field("assertions", total_checks);
         j.field("llama_available", g_have_llama);
         j.field("fortran_available", g_have_fortran);

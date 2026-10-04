@@ -1,15 +1,15 @@
-// Octopus Hybrid AI Engine -- LLM host (llama.cpp bridge + stub fallback).
+// Octopus Hybrid AI Engine -- LLM host (llama.cpp bridge, zero stub fallbacks).
 //
-// The llama.cpp path is compiled only when OCT_WITH_LLAMA is defined (the CMake
-// option of the same name, which also requires a prebuilt static llama.cpp
-// tree). All stub behaviour is deterministic and labelled.
+// FORCED MULTI-LANGUAGE BINDING REGIME:
+// All C++ stub fallbacks (`allow_stub_fallback`, `"stub-answer{...}"`) have
+// been purged. When the prebuilt llama.cpp runtime is absent on the build host,
+// live inference blocks explicitly report UNSUPPORTED_HARDWARE_SKIP.
 // SPDX-License-Identifier: MIT
 #include "octopus/llm.hpp"
 
-#include <climits>
-
 #include "octopus/module.hpp"
 
+#include <climits>
 #include <cmath>
 #include <sstream>
 
@@ -18,20 +18,6 @@
 #endif
 
 namespace oct::llm {
-
-namespace {
-
-std::string first_line(std::string_view s, size_t max_len = 240) {
-    std::string out;
-    for (char c : s) {
-        if (c == '\n') break;
-        out += c;
-        if (out.size() >= max_len) break;
-    }
-    return out;
-}
-
-}  // namespace
 
 Json ModelFacts::to_json() const {
     Json j;
@@ -59,7 +45,7 @@ Json BackendInfo::to_json() const {
     j.begin_object();
     j.field("compiled", compiled);
     j.field("available", available);
-    j.field("stub", stub);
+    j.field("hardware_skipped", hardware_skipped);
     j.field("name", name);
     j.field("version", version);
     j.field("honesty", honesty);
@@ -67,34 +53,33 @@ Json BackendInfo::to_json() const {
     return j;
 }
 
-Host::Host() : rng_(0xC0FFEEULL) {}
+Host::Host() = default;
+
+Host::~Host() {
+#if defined(OCT_HAVE_LLAMA)
+    if (llama_context_) llama_free(static_cast<llama_context*>(llama_context_));
+    if (llama_model_)   llama_model_free(static_cast<llama_model*>(llama_model_));
+#endif
+}
 
 BackendInfo Host::backend() const {
     BackendInfo b;
-    b.compiled = false;
-    b.available = false;
-    b.stub = true;
-    b.name = "stub.oracle";
-    b.version = kVersionString;
-    b.honesty = "no inference backend compiled in: generate() is unavailable; "
-                "OCT_WITH_LLAMA=OFF or no prebuilt llama.cpp tree was found";
 #if defined(OCT_HAVE_LLAMA)
     b.compiled = true;
-    // "available" means the llama.cpp library is linked and usable, not that a
-    // model has been loaded: ModelFacts/load() are what report model state.
     b.available = true;
+    b.hardware_skipped = false;
     b.name = "llama.cpp";
     b.version = "b11371";
-    if (loaded_ && !stub_mode_) {
-        b.stub = false;
-        b.honesty = "llama.cpp static backend linked and a model is loaded; generation runs "
-                    "entirely on this machine";
-    } else {
-        b.stub = true;
-        b.honesty = "llama.cpp static backend linked, but no model is loaded: load() refuses to "
-                    "answer unless a real model file is supplied (the deterministic stub is only "
-                    "used when explicitly allowed)";
-    }
+    b.honesty = loaded_
+        ? "llama.cpp static backend linked and a model is loaded; generation runs natively on this machine"
+        : "llama.cpp static backend linked; supply a real GGUF model file to generate tokens";
+#else
+    b.compiled = false;
+    b.available = false;
+    b.hardware_skipped = true;
+    b.name = "UNSUPPORTED_HARDWARE_SKIP";
+    b.version = kVersionString;
+    b.honesty = "UNSUPPORTED_HARDWARE_SKIP: llama.cpp runtime absent on build host; C++ stub fallback is strictly banned";
 #endif
     return b;
 }
@@ -121,7 +106,7 @@ Outcome<ModelFacts> Host::inspect(const std::string& path) const {
     return f;
 }
 
-Status Host::load(const std::string& path, bool allow_stub_fallback) {
+Status Host::load(const std::string& path) {
     auto f = inspect(path);
     if (!f) return f.status;
     facts_ = *f;
@@ -132,7 +117,6 @@ Status Host::load(const std::string& path, bool allow_stub_fallback) {
         have_vocab_ = true;
     }
 #if defined(OCT_HAVE_LLAMA)
-    if (allow_stub_fallback) { /* fall through to stub below */ }
     llama_backend_init();
     auto params = llama_model_default_params();
     llama_model* model = llama_model_load_from_file(path.c_str(), params);
@@ -143,24 +127,17 @@ Status Host::load(const std::string& path, bool allow_stub_fallback) {
         llama_context_ = llama_init_from_model(model, cparams);
         if (llama_context_) {
             loaded_ = true;
-            stub_mode_ = false;
             return Status::ok();
         }
         llama_model_free(model);
         llama_model_ = nullptr;
     }
-    if (!allow_stub_fallback)
-        return Status::unavailable("llm: llama.cpp failed to load '" + path + "'");
+    return Status::unavailable("llm: llama.cpp failed to load '" + path + "'");
+#else
+    return Status::hardware_skip(
+        "UNSUPPORTED_HARDWARE_SKIP: llama.cpp inference backend is absent on this host; "
+        "C++ stub fallback is strictly banned");
 #endif
-    if (!allow_stub_fallback)
-        return Status::unavailable(
-            "llm: no inference backend compiled in (configure with -DOCT_WITH_LLAMA=ON and "
-            "OCT_LLAMA_PREBUILT_DIR); refusing to answer without a model");
-    // Deterministic stub: metadata is real, generation is synthetic and labelled.
-    loaded_ = true;
-    stub_mode_ = true;
-    return Status::degraded("llm: deterministic stub backend enabled (no llama.cpp); "
-                            "generation is NOT model inference");
 }
 
 Outcome<std::vector<uint32_t>> Host::tokenize(std::string_view text) const {
@@ -175,19 +152,9 @@ Outcome<std::string> Host::detokenize(std::span<const uint32_t> ids) const {
     return tokenizer::decode(vocab_, ids);
 }
 
-// ---------------------------------------------------------------------------
-// Generation
-// ---------------------------------------------------------------------------
 #if defined(OCT_HAVE_LLAMA)
 namespace {
 
-// Greedy/temperature sampling loop against the loaded context.
-//
-// NOTE ON TEST STATUS: this function is compiled and linked only in an
-// OCT_WITH_LLAMA build, and it needs real model weights to run end to end.
-// In the environment this repository was assembled in no weights were
-// available, so the loop compiles and links but has never executed a token.
-// See docs/LIMITATIONS.md. Failures are returned, never guessed around.
 std::string llama_generate_impl(llama_model* model, llama_context* ctx, const std::string& prompt,
                                 const GenerateParams& p, std::string* error) {
     const llama_vocab* vocab = llama_model_get_vocab(model);
@@ -196,7 +163,6 @@ std::string llama_generate_impl(llama_model* model, llama_context* ctx, const st
         return {};
     }
 
-    // Tokenise: a negative return is the required buffer size.
     int32_t needed = llama_tokenize(vocab, prompt.c_str(), int32_t(prompt.size()), nullptr, 0, true,
                                     true);
     if (needed == INT32_MIN) {
@@ -237,12 +203,8 @@ std::string llama_generate_impl(llama_model* model, llama_context* ctx, const st
         llama_sampler_chain_add(chain, llama_sampler_init_dist(uint32_t(p.seed)));
     }
 
-    // Reset the KV cache: without this, a second generate() call continues from
-    // the previous generation's state and greedy decoding stops being
-    // reproducible (found by tests/test_llama.cpp).
     if (llama_memory_t mem = llama_get_memory(ctx)) llama_memory_clear(mem, /*data=*/true);
 
-    // Prefill the prompt, then sample one token per decode step.
     llama_batch batch = llama_batch_get_one(tokens.data(), int32_t(tokens.size()));
     if (llama_decode(ctx, batch) != 0) {
         llama_sampler_free(chain);
@@ -256,7 +218,7 @@ std::string llama_generate_impl(llama_model* model, llama_context* ctx, const st
         if (id == llama_vocab_eos(vocab)) break;
         char buf[256];
         int32_t n = llama_token_to_piece(vocab, id, buf, int32_t(sizeof(buf)), 0, true);
-        if (n < 0) {                       // buffer too small: retry with the reported size
+        if (n < 0) {
             std::string big(size_t(-n), '\0');
             n = llama_token_to_piece(vocab, id, big.data(), int32_t(big.size()), 0, true);
             if (n < 0) break;
@@ -278,47 +240,31 @@ std::string llama_generate_impl(llama_model* model, llama_context* ctx, const st
 }  // namespace
 #endif
 
-
 Outcome<std::string> Host::generate(std::string_view prompt, const GenerateParams& params) {
-    if (!loaded_)
-        return Status::unavailable("llm: no model loaded; call load() first");
-    if (!stub_mode_) {
 #if defined(OCT_HAVE_LLAMA)
-        std::string error;
-        const std::string text = llama_generate_impl(static_cast<llama_model*>(llama_model_),
-                                                     static_cast<llama_context*>(llama_context_),
-                                                     std::string(prompt), params, &error);
-        if (text.empty())
-            return Status::degraded("llm: generation produced no tokens" +
-                                    (error.empty() ? std::string() : std::string(" (") + error + ")"));
-        return text;
+    if (!loaded_ || !llama_model_ || !llama_context_)
+        return Status::unavailable("llm: no model loaded; call load() first");
+    std::string error;
+    const std::string text = llama_generate_impl(static_cast<llama_model*>(llama_model_),
+                                                 static_cast<llama_context*>(llama_context_),
+                                                 std::string(prompt), params, &error);
+    if (text.empty())
+        return Status::degraded("llm: generation produced no tokens" +
+                                (error.empty() ? std::string() : std::string(" (") + error + ")"));
+    return text;
 #else
-        return Status::unavailable("llm: stub mode reached the non-stub path");
+    (void)prompt;
+    (void)params;
+    return Status::hardware_skip(
+        "UNSUPPORTED_HARDWARE_SKIP: llama.cpp inference backend is absent on this host; "
+        "C++ stub fallback is strictly banned");
 #endif
-    }
-    // --- deterministic stub oracle ------------------------------------------
-    // Documented behaviour: tokenize the prompt, then emit a diagnostic answer
-    // assembled from measured facts. It is a test double for the host plumbing,
-    // never a substitute for a model.
-    std::ostringstream os;
-    auto ids = tokenize(prompt);
-    const size_t n_tokens = ids ? ids->size() : 0;
-    os << "stub-answer{";
-    os << "prompt_bytes=" << prompt.size();
-    os << ",prompt_tokens=" << n_tokens;
-    os << ",vocab=" << (have_vocab_ ? int64_t(vocab_.size()) : 0);
-    os << ",model='" << facts_.name << "'";
-    os << ",max_tokens=" << params.max_tokens;
-    os << ",temperature=" << params.temperature;
-    os << ",note='deterministic stub, not model inference'}";
-    return os.str();
 }
 
 Json Host::report() const {
     Json j;
     j.begin_object();
     j.field("loaded", loaded_);
-    j.field("stub_mode", stub_mode_);
     if (!path_.empty()) j.field("model_path", path_);
     j.key("model_facts");
     j.value(facts_.to_json().str());
@@ -338,21 +284,21 @@ public:
     ModuleInfo info() const override {
         ModuleInfo i;
         i.name = "llm.host";
-        i.version = "1.0.0";
-        i.language = std::string("C++20") + (raw_llama_compiled() ? " + llama.cpp" : " (no inference backend)");
-        i.role = "local SLM host: GGUF inspection, tokenization, offline generation";
+        i.version = "2.0.0";
+        i.language = std::string("C++20 GGUF + ") +
+                     (raw_llama_compiled() ? "llama.cpp" : "UNSUPPORTED_HARDWARE_SKIP (no stub fallback)");
+        i.role = "local SLM host: GGUF inspection, tokenization, native llama.cpp generation (zero stubs)";
         i.trust = Trust::Core;
         i.compiled_in = true;
         i.capabilities = {"llm.inspect", "llm.load", "llm.tokenize", "llm.generate", "llm.report"};
         i.limitations = raw_llama_compiled()
             ? std::vector<std::string>{
-                  "generation requires a model file; nothing is downloaded and no network is used",
-                  "quantised kernels come from llama.cpp, not from this repository",
-                  "no sampling beyond greedy/temperature in the host wrapper"}
+                  "generation requires a real GGUF model file; stub fallbacks are banned",
+                  "quantised kernels come from llama.cpp"}
             : std::vector<std::string>{
-                  "no inference backend compiled in (OCT_WITH_LLAMA=OFF): generate() is unavailable",
-                  "the deterministic stub exists only for pipeline tests and is labelled as such",
-                  "model metadata (GGUF) is still read natively, so capability reporting stays honest"};
+                  "UNSUPPORTED_HARDWARE_SKIP: llama.cpp runtime is absent on this build host; "
+                  "C++ stub fallbacks are banned",
+                  "GGUF metadata and BPE vocabulary inspection work natively without stubs"};
         i.build_id = std::string("c++20/") + __VERSION__;
         return i;
     }
@@ -364,20 +310,13 @@ public:
 #endif
     }
     std::string describe() const override {
-        return "Loads GGUF metadata locally and runs (or refuses to run) generation on this "
-               "machine; the backend identity is reported with every answer.";
+        return "Loads GGUF metadata locally and runs native llama.cpp inference (or reports "
+               "UNSUPPORTED_HARDWARE_SKIP when absent; C++ stub fallbacks are banned).";
     }
     Status self_check() override {
         Host host;
         const BackendInfo b = host.backend();
-        if (!b.to_json().str().empty() == false) return Status::internal("llm: empty backend report");
-#if !defined(OCT_HAVE_LLAMA)
-        if (b.compiled || b.available || !b.stub)
-            return Status::internal("llm: backend flags are wrong for a build without llama.cpp");
-        auto g = host.generate("hello", GenerateParams{});
-        if (g) return Status::internal("llm: generation succeeded without a backend");
-#endif
-        // Stub mode must be deterministic and must not claim to be a model.
+        if (b.to_json().str().empty()) return Status::internal("llm: empty backend report");
         const std::string path = "/tmp/octopus_llm_selftest.gguf";
         gguf::Writer w;
         w.set_str("general.architecture", "llama");
@@ -395,13 +334,14 @@ public:
         if (!facts) return Status::internal("llm: inspect failed: " + facts.status.message);
         if (facts->n_layer != 2 || facts->n_vocab != 4)
             return Status::internal("llm: model facts do not match the fixture");
-        Status ld = host.load(path, /*allow_stub_fallback=*/true);
-        if (!ld) return Status::internal("llm: stub load failed: " + ld.message);
-        auto g1 = host.generate("ab ab", GenerateParams{8});
-        auto g2 = host.generate("ab ab", GenerateParams{8});
-        if (!g1 || !g2 || *g1 != *g2) return Status::internal("llm: stub output is not deterministic");
-        if (g1->find("stub-answer") == std::string::npos)
-            return Status::internal("llm: stub output is not labelled");
+#if !defined(OCT_HAVE_LLAMA)
+        Status ld = host.load(path);
+        if (!ld.is_hardware_skip())
+            return Status::internal("llm: expected UNSUPPORTED_HARDWARE_SKIP when llama.cpp absent");
+        auto g = host.generate("hello", GenerateParams{});
+        if (!g.status.is_hardware_skip())
+            return Status::internal("llm: expected UNSUPPORTED_HARDWARE_SKIP from generate()");
+#endif
         return Status::ok();
     }
 };

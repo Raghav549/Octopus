@@ -1,4 +1,4 @@
-// Octopus Hybrid AI Engine -- numerical kernel library (registry + backend).
+// Octopus Hybrid AI Engine -- Fortran 2023 numerical kernel library.
 // SPDX-License-Identifier: MIT
 #include "octopus/numerics.hpp"
 
@@ -10,10 +10,9 @@ namespace oct::numerics {
 
 const char* backend_name(Backend b) noexcept {
     switch (b) {
-        case Backend::CxxLd:   return "cxx.long-double";
-        case Backend::Fortran: return "fortran.real64";
+        case Backend::Fortran: return "fortran.2023";
     }
-    return "?";
+    return "fortran.2023";
 }
 
 double Diagnostics::get(std::string_view n, double dflt) const {
@@ -29,6 +28,9 @@ Json Result::to_json(bool include_data) const {
     j.field("backend", backend);
     j.field("units", units);
     j.field("fingerprint", fingerprint);
+    j.field("hardware_skipped", hardware_skipped);
+    j.field("status", to_string(status.code));
+    if (!status.message.empty()) j.field("status_message", status.message);
     j.key("shape");
     j.begin_array();
     for (int64_t d : shape) j.value(d);
@@ -67,6 +69,8 @@ Json Validation::to_json() const {
     Json j;
     j.begin_object();
     j.field("accepted", accepted());
+    j.field("hardware_skipped", hardware_skipped);
+    j.field("status", hardware_skipped ? "UNSUPPORTED_HARDWARE_SKIP" : (accepted() ? "ok" : "failed"));
     j.field("reference", reference);
     j.field("reference_ok", reference_ok);
     j.field("tolerance", tolerance);
@@ -115,6 +119,31 @@ void finish_result(Result& r, const ProblemSpec& spec, Clock::time_point t0,
     (void)data_elements;
 }
 
+Result make_hardware_skip_result(const Kernel& k, const ProblemSpec& spec,
+                                 std::vector<int64_t> shape) {
+    Result r;
+    r.kernel = k.name();
+    r.method = k.method();
+    r.units = k.units();
+    r.spec = spec;
+    r.shape = std::move(shape);
+    r.hardware_skipped = true;
+    r.status = fortran_bridge::skip_status(k.name());
+    r.backend = backend_string(spec.backend, false, fortran_bridge::compiler_id());
+    r.fingerprint = fingerprint_of(spec, r.method, r.backend);
+    return r;
+}
+
+Validation make_hardware_skip_validation(const Kernel& k, const ProblemSpec& spec,
+                                         std::string reference) {
+    Validation v;
+    v.reference = std::move(reference);
+    v.tolerance = spec.tolerance;
+    v.hardware_skipped = true;
+    v.notes = fortran_bridge::skip_status(k.name()).message;
+    return v;
+}
+
 }  // namespace detail
 
 KernelLibrary::KernelLibrary() {
@@ -126,6 +155,7 @@ KernelLibrary::KernelLibrary() {
     kernels_.push_back(detail::make_cavity2d_kernel());
     kernels_.push_back(detail::make_gas_kernel());
     kernels_.push_back(detail::make_linsolve_kernel());
+    kernels_.push_back(detail::make_tensor_field_kernel());
     std::sort(kernels_.begin(), kernels_.end(),
               [](const auto& a, const auto& b) { return a->name() < b->name(); });
 }
@@ -160,24 +190,23 @@ std::string KernelLibrary::fortran_backend_id() const { return fortran_bridge::c
 namespace fortran_bridge {
 
 bool available() {
-#if defined(OCT_HAVE_FORTRAN)
-    return true;
-#else
-    return false;
-#endif
+    return oct_f_compiler_available() != 0;
 }
 
 const char* compiler_id() {
     static const std::string id = [] {
-#if defined(OCT_HAVE_FORTRAN)
         char buf[128] = {0};
-        if (oct_f_compiler_id(buf, int(sizeof(buf))) == 0) return std::string(buf);
-        return std::string("fortran.unknown");
-#else
-        return std::string("absent (no Fortran compiler found at configure time)");
-#endif
+        if (oct_f_compiler_id(buf, int(sizeof(buf))) == 0 && buf[0] != '\0')
+            return std::string(buf);
+        return std::string("UNSUPPORTED_HARDWARE_SKIP (gfortran/lfortran absent; C++ fallback banned)");
     }();
     return id.c_str();
+}
+
+Status skip_status(std::string_view kernel_name) {
+    return Status::hardware_skip(
+        "Fortran 2023 compiler (gfortran/lfortran) absent on host for kernel '" +
+        std::string(kernel_name) + "'; C++ reference fallback is strictly banned");
 }
 
 }  // namespace fortran_bridge

@@ -50,6 +50,7 @@ const Word* Vm::find(std::string_view name) const {
 void Vm::reset() {
     stack_.clear();
     return_stack_.clear();
+    registers_.fill(0.0);
     output_.clear();
     std::fill(memory_.begin(), memory_.end(), 0.0);
     main_.clear();
@@ -191,6 +192,64 @@ Status Vm::execute(const std::vector<Instruction>& code, int64_t& steps, int64_t
                 case Instruction::Kind::Call:
                 case Instruction::Kind::Op: {
                     const std::string& op = in.name;
+                    // Low-level stack register & return-stack interactions:
+                    // `>r`, `r>`, `r@`, `reg@`, `reg!`, and `r0@`..`r15@` / `r0!`..`r15!`
+                    if (op == ">r") {
+                        require(!stack_.empty(), "vm: >r on empty stack");
+                        require(return_stack_.size() < stack_limit_, "vm: return stack overflow");
+                        return_stack_.push_back(stack_.back());
+                        stack_.pop_back();
+                        break;
+                    }
+                    if (op == "r>") {
+                        require(!return_stack_.empty(), "vm: r> on empty return stack");
+                        require(stack_.size() < stack_limit_, "vm: stack overflow");
+                        stack_.push_back(return_stack_.back());
+                        return_stack_.pop_back();
+                        break;
+                    }
+                    if (op == "r@") {
+                        require(!return_stack_.empty(), "vm: r@ on empty return stack");
+                        require(stack_.size() < stack_limit_, "vm: stack overflow");
+                        stack_.push_back(return_stack_.back());
+                        break;
+                    }
+                    if (op == "reg@") {
+                        require(!stack_.empty(), "vm: reg@ on empty stack");
+                        const double idx = stack_.back();
+                        stack_.pop_back();
+                        require(idx >= 0.0 && size_t(idx) < kNumRegisters, "vm: register index out of bounds");
+                        stack_.push_back(registers_[size_t(idx)]);
+                        break;
+                    }
+                    if (op == "reg!") {
+                        require(stack_.size() >= 2, "vm: reg! needs value and register index");
+                        const double idx = stack_.back();
+                        stack_.pop_back();
+                        const double val = stack_.back();
+                        stack_.pop_back();
+                        require(idx >= 0.0 && size_t(idx) < kNumRegisters, "vm: register index out of bounds");
+                        registers_[size_t(idx)] = val;
+                        break;
+                    }
+                    if (op.size() >= 3 && op[0] == 'r' && (op.back() == '@' || op.back() == '!')) {
+                        bool digits = true;
+                        for (size_t k = 1; k + 1 < op.size(); ++k)
+                            if (!std::isdigit(static_cast<unsigned char>(op[k]))) digits = false;
+                        if (digits) {
+                            const size_t r_idx = size_t(std::stoul(op.substr(1, op.size() - 2)));
+                            require(r_idx < kNumRegisters, "vm: register r" + std::to_string(r_idx) + " out of bounds");
+                            if (op.back() == '@') {
+                                require(stack_.size() < stack_limit_, "vm: stack overflow");
+                                stack_.push_back(registers_[r_idx]);
+                            } else {
+                                require(!stack_.empty(), "vm: " + op + " on empty stack");
+                                registers_[r_idx] = stack_.back();
+                                stack_.pop_back();
+                            }
+                            break;
+                        }
+                    }
                     // primitives first
                     if (op == "+" || op == "-" || op == "*" || op == "/" || op == "mod" ||
                         op == "dup" || op == "drop" || op == "swap" || op == "over" || op == "rot" ||

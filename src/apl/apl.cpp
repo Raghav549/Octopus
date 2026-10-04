@@ -779,6 +779,61 @@ Json DenseEncoding::to_json() const {
     return j;
 }
 
+Json ContextCompression::to_json() const {
+    Json j;
+    j.begin_object();
+    j.field("apl_expression", apl_expression);
+    j.field("matrix_compression_ratio", matrix_compression_ratio);
+    j.key("matrix_shape");
+    j.begin_array();
+    for (int64_t d : matrix_shape) j.value(d);
+    j.end_array();
+    j.key("row_energy");
+    j.begin_array();
+    for (double v : row_energy) j.value(v);
+    j.end_array();
+    j.key("dense_encoding");
+    j.raw_json(dense.to_json().str());
+    j.end_object();
+    return j;
+}
+
+Outcome<ContextCompression> compress_context_matrix(std::span<const uint32_t> tokens,
+                                                    int64_t window_cols) {
+    if (tokens.empty()) return Status::invalid("APL compress_context_matrix: empty token stream");
+    const int64_t cols = std::max<int64_t>(2, window_cols);
+    const int64_t rows = std::max<int64_t>(1, (int64_t(tokens.size()) + cols - 1) / cols);
+
+    Environment env;
+    std::vector<double> padded(size_t(rows * cols), 0.0);
+    for (size_t i = 0; i < tokens.size(); ++i) padded[i] = double(tokens[i]);
+    env.vars["T"] = Array::from_f64(padded, {rows * cols});
+    env.vars["S"] = Array::from_f64({double(rows), double(cols)}, {2});
+
+    // Right-to-left APL evaluation:
+    // 1. W ← S ⍴ T          (reshape token stream into [rows, cols] context matrix)
+    // 2. E ← +/ W           (row-wise reduction across context windows)
+    // 3. G ← W +.× ⍉ W      (cross-window Gram similarity matrix via inner product + transpose)
+    auto w_res = eval_line("W \xe2\x86\x90 S \xe2\x8d\xb4 T", env);
+    if (!w_res) return w_res.status;
+    auto e_res = eval_line("E \xe2\x86\x90 +/ W", env);
+    if (!e_res) return e_res.status;
+    auto g_res = eval_line("G \xe2\x86\x90 W +.\xc3\x97 \xe2\x8d\x89 W", env);
+    if (!g_res) return g_res.status;
+
+    ContextCompression cc;
+    cc.matrix_shape = {rows, cols};
+    cc.row_energy = e_res->as_f64();
+    cc.gram_projection = g_res->as_f64();
+    Dictionary pool = Dictionary::apl_pool();
+    cc.dense = dense_encode(pool, tokens);
+    cc.apl_expression = "G \xe2\x86\x90 (S \xe2\x8d\xb4 T) +.\xc3\x97 \xe2\x8d\x89 (S \xe2\x8d\xb4 T) ; E \xe2\x86\x90 +/ S \xe2\x8d\xb4 T";
+    const double raw_matrix_elems = double(rows * cols);
+    const double summary_elems = double(cc.row_energy.size());
+    cc.matrix_compression_ratio = summary_elems > 0.0 ? (raw_matrix_elems / summary_elems) : 1.0;
+    return cc;
+}
+
 // ---------------------------------------------------------------------------
 // Module wrapper
 // ---------------------------------------------------------------------------

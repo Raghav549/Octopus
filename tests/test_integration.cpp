@@ -18,6 +18,7 @@
 #include "octopus/stackvm.hpp"
 #include "octopus/supervisor.hpp"
 #include "octopus/tokenizer.hpp"
+#include "octopus/universe.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -262,4 +263,119 @@ OCT_TEST(integration, concurrency_is_deterministic_for_equal_work) {
     producer.join();
     OCT_EQ(seen.size(), size_t(32));
     for (size_t i = 0; i < seen.size(); ++i) OCT_EQ(seen[i], int(i));   // FIFO order
+}
+
+OCT_TEST(integration, physical_universe_image_and_video_engine_pipeline) {
+    // 1. Coordinate-to-Piet translation (4-channel: light, reflection, fluid, gravity)
+    const int w = 16, h = 16;
+    std::vector<double> coords(size_t(w * h * 4), 0.0);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const size_t base = size_t(y * w + x) * 4;
+            coords[base + 0] = 0.6 + 0.4 * std::cos(0.2 * double(x));
+            coords[base + 1] = 0.3 + 0.2 * std::sin(0.3 * double(y));
+            coords[base + 2] = 0.5 * std::sin(0.25 * double(x + y));
+            coords[base + 3] = 1.0 / (1.0 + 0.05 * double(x * x + y * y));
+        }
+    }
+    auto fr = universe::translate_coordinates_to_piet(coords, w, h, 0.5);
+    OCT_CHECK(bool(fr));
+    if (fr) {
+        OCT_CHECK(fr->sld_report.sound);
+        OCT_EQ(fr->canvas.width, w);
+        OCT_EQ(fr->canvas.height, h);
+        OCT_CHECK(fr->total_radiance > 0.0);
+        const std::string y4m = "/tmp/octopus_test_universe.y4m";
+        OCT_CHECK(universe::write_y4m_video(y4m, {fr->canvas, fr->canvas}, 24).is_ok());
+    }
+
+    // 2. Live Fortran 2023 synthesis or explicit UNSUPPORTED_HARDWARE_SKIP
+    universe::SceneSpec spec;
+    spec.width = 16;
+    spec.height = 16;
+    spec.frames = 2;
+    const auto vr = universe::synthesize_video(spec);
+    if (numerics::KernelLibrary::instance().fortran_available()) {
+        OCT_CHECK(!vr.hardware_skipped);
+        OCT_CHECK(vr.status.is_ok());
+        OCT_EQ(vr.frames.size(), size_t(2));
+    } else {
+        OCT_CHECK(vr.hardware_skipped);
+        OCT_CHECK(vr.status.is_hardware_skip());
+    }
+}
+
+OCT_TEST(integration, autonomous_agent_supervisor_live_lisp_and_prolog_healing) {
+    supervisor::Supervisor sup;
+    smalltalk::ActorSystem actors("watchdog.test");
+    lisp::Interp interp;
+    // Faulty initial LISP function (division by zero)
+    OCT_CHECK(interp.eval_string("(define (reactor-flux x) (/ x 0))").is_ok());
+    prolog::KnowledgeBase kb;
+    prolog::load_axiom_core(kb);
+
+    actors.spawn("reactor.cell", [&](const std::string&, const smalltalk::Args& call_args) -> Outcome<std::string> {
+        const std::string a = call_args.empty() ? "6" : call_args[0];
+        auto r = interp.eval_string("(reactor-flux " + a + ")");
+        if (!r.ok()) return r.status;
+        return (*r)->to_string();
+    }, smalltalk::Strategy::OneForOne, 3);
+
+    // Trigger live exception -> automated LISP hot-patch -> Prolog SLD sweep -> live retry
+    const auto rep = sup.heal_actor_exception(
+        actors, interp, kb,
+        "reactor.cell", "step", {"6"},
+        "reactor-flux", "(lambda (x) (* (+ x 4) 3))",
+        "sound_backend(fortran2023)");
+
+    OCT_CHECK(rep.fault_intercepted);
+    OCT_CHECK(rep.lisp_rewritten);
+    OCT_CHECK(rep.prolog_invariant_ok);
+    OCT_CHECK(rep.recovered_live);
+    OCT_EQ(rep.healed_reply, std::string("30"));
+    OCT_CHECK(rep.lisp_generation_after > rep.lisp_generation_before);
+    OCT_CHECK(sup.audit().verify());
+}
+
+OCT_TEST(integration, multi_language_dna_prolog_guardrail_apl_compressor_forth_occam_intercal) {
+    // 1. Prolog SLD Soundness Guardrail
+    const auto good_sld = prolog::verify_response_soundness(
+        "explain conservation", "fortran2023 euler_hllc conserves mass");
+    OCT_CHECK(good_sld.sound);
+    const auto bad_sld = prolog::verify_response_soundness(
+        "explain conservation", "stub-answer{not model inference}");
+    OCT_CHECK(!bad_sld.sound);
+
+    // 2. APL Context Matrix Compressor
+    const std::vector<uint32_t> toks = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    const auto cc = apl::compress_context_matrix(toks, 4);
+    OCT_CHECK(bool(cc));
+    if (cc) {
+        OCT_EQ(cc->matrix_shape[0], 4);
+        OCT_EQ(cc->matrix_shape[1], 4);
+        OCT_EQ(cc->row_energy.size(), size_t(4));
+        OCT_NEAR(cc->row_energy[0], 10.0, 1e-12); // 1+2+3+4 = 10
+        OCT_CHECK(cc->matrix_compression_ratio >= 4.0);
+    }
+
+    // 3. Forth hardware register file + return stack
+    stackvm::Vm vm;
+    OCT_CHECK(vm.compile("21 r0! r0@ 2 * >r r@ r> + r1! r1@ .").is_ok());
+    OCT_CHECK(bool(vm.run()));
+    OCT_NEAR(vm.get_register(0), 21.0, 1e-12);
+    OCT_NEAR(vm.get_register(1), 84.0, 1e-12);
+
+    // 4. Occam + Forth + Smalltalk Triad Coordinator
+    const auto triad = occam::coordinate_triad("", 3.0);
+    OCT_CHECK(triad.ok);
+    OCT_CHECK(triad.occam_verdict.agreed);
+    OCT_NEAR(triad.occam_verdict.value, 16.0, 1e-12); // (3+1)^2 = 16
+    OCT_CHECK(triad.smalltalk_reply.find("triad-ack:") != std::string::npos);
+
+    // 5. INTERCAL Obfuscated Core Shield (mingle + select + hash-linked envelope)
+    intercal::AuditChain chain;
+    const auto env = intercal::seal_code_structure("lisp.ast", "(define (f x) (* x x))", "shield-key", &chain);
+    const auto unsealed = intercal::unseal_code_structure(env, "shield-key", &chain);
+    OCT_CHECK(bool(unsealed));
+    if (unsealed) OCT_EQ(*unsealed, std::string("(define (f x) (* x x))"));
 }

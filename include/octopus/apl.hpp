@@ -113,6 +113,21 @@ std::vector<uint32_t> encode_symbols(Dictionary& dict,
                                      const std::vector<std::string>& symbols,
                                      DenseEncoding* out_stats = nullptr);
 
+// Cross-token context matrix compressor via right-to-left APL matrix array
+// evaluation (`R C ⍴ T`, `+/ W`, `⍉ W`, `W +.× ⍉W`).
+struct ContextCompression {
+    std::vector<int64_t> matrix_shape;          // [rows, cols]
+    std::vector<double>  row_energy;            // +/ W (per-window token energy)
+    std::vector<double>  gram_projection;       // flattened W +.× ⍉W cross-window attention
+    DenseEncoding        dense;
+    std::string          apl_expression;
+    double               matrix_compression_ratio = 0.0;
+    Json                 to_json() const;
+};
+
+Outcome<ContextCompression> compress_context_matrix(std::span<const uint32_t> tokens,
+                                                    int64_t window_cols = 8);
+
 // ---------------------------------------------------------------------------
 // Module wrapper (registered with the engine)
 // ---------------------------------------------------------------------------

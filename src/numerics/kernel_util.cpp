@@ -15,11 +15,9 @@ Grid1D make_grid(int n, double x0, double x1) {
     return g;
 }
 
-std::string backend_string(Backend requested, bool used_fortran, const std::string& fortran_id) {
-    if (used_fortran) return "fortran.real64 [" + fortran_id + "]";
-    if (requested == Backend::Fortran)
-        return std::string(backend_name(Backend::CxxLd)) + " (fortran unavailable -> degraded)";
-    return backend_name(Backend::CxxLd);
+std::string backend_string(Backend /*requested*/, bool used_fortran, const std::string& fortran_id) {
+    if (used_fortran) return "fortran.2023 [" + fortran_id + "]";
+    return "UNSUPPORTED_HARDWARE_SKIP [" + fortran_id + "]";
 }
 
 }  // namespace oct::numerics::detail

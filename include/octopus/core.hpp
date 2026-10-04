@@ -30,7 +30,8 @@ inline constexpr const char* kEngineName    = "Octopus";
 enum class Code : uint8_t {
     Ok = 0,
     Rejected,       // policy / verification refused the request
-    Degraded,       // ran, but without the preferred backend
+    Degraded,       // ran with diagnostic / hardware-skip note
+    HardwareSkip,   // UNSUPPORTED_HARDWARE_SKIP (missing compiler/hardware; no C++ fallback)
     Invalid,        // malformed input
     Unavailable,    // capability not compiled in / not detected
     Timeout,
@@ -49,11 +50,21 @@ struct Status {
     static Status ok(std::string msg = {}) { return {Code::Ok, std::move(msg)}; }
     static Status rejected(std::string msg) { return {Code::Rejected, std::move(msg)}; }
     static Status degraded(std::string msg) { return {Code::Degraded, std::move(msg)}; }
+    static Status hardware_skip(std::string msg) {
+        if (msg.find("UNSUPPORTED_HARDWARE_SKIP") == std::string::npos)
+            msg = "UNSUPPORTED_HARDWARE_SKIP: " + msg;
+        return {Code::HardwareSkip, std::move(msg)};
+    }
     static Status invalid(std::string msg) { return {Code::Invalid, std::move(msg)}; }
     static Status unavailable(std::string msg) { return {Code::Unavailable, std::move(msg)}; }
+    static Status io_error(std::string msg) { return {Code::Unavailable, std::move(msg)}; }
     static Status internal(std::string msg) { return {Code::Internal, std::move(msg)}; }
 
     bool is_ok() const noexcept { return code == Code::Ok || code == Code::Degraded; }
+    bool is_hardware_skip() const noexcept {
+        return code == Code::HardwareSkip ||
+               message.find("UNSUPPORTED_HARDWARE_SKIP") != std::string::npos;
+    }
     explicit operator bool() const noexcept { return is_ok(); }
 };
 
@@ -68,6 +79,7 @@ struct Outcome {
     Outcome(Status s, T v) : status(std::move(s)), value(std::move(v)) {}
 
     bool is_ok() const noexcept { return status.is_ok() && value.has_value(); }
+    bool ok() const noexcept { return is_ok(); }
     explicit operator bool() const noexcept { return is_ok(); }
     const T& operator*() const { return *value; }
     T& operator*() { return *value; }
@@ -175,6 +187,11 @@ public:
     Json& field(std::string_view k, uint64_t v) { return key(k).value(v); }
     Json& field(std::string_view k, int v) { return key(k).value(static_cast<int64_t>(v)); }
     Json& field(std::string_view k, double v, int p = 10) { return key(k).value(v, p); }
+    Json& raw_json(std::string_view raw) {
+        comma();
+        out_.append(raw);
+        return *this;
+    }
     const std::string& str() const { return out_; }
     std::string take() { return std::move(out_); }
 private:

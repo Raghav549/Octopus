@@ -48,6 +48,23 @@ Raster render_state(std::span<const double> state, int width, int height, double
 std::vector<int> quantise(std::span<const double> state, double lo, double hi);
 std::vector<double> dequantise(std::span<const int> codes, double lo, double hi);
 
+// Visual Canvas Logic Engine: render cognitive execution pathways and neural
+// synapse configurations into multi-tonal, color-metric Piet pixel arrays and
+// trace the Piet (dHue, dLightness) codel transition instructions.
+struct CodelTrace {
+    int64_t                  codel_transitions = 0;
+    std::vector<std::string> ops_executed;
+    std::vector<int64_t>     stack_snapshot;
+    std::string              canvas_fingerprint;
+    Json                     to_json() const;
+};
+
+Raster render_synapse_canvas(std::span<const double> weights,
+                             std::span<const double> activations,
+                             int width, int height);
+
+CodelTrace execute_canvas_pathway(const Raster& canvas, int64_t max_steps = 128);
+
 Json palette_legend();
 std::shared_ptr<oct::Module> make_piet_module();
 

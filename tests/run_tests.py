@@ -61,7 +61,7 @@ def main() -> int:
     failures: list[str] = []
 
     if not args.no_build:
-        cfg = run(["cmake", "-B", "build", "-S", ".", "-DCMAKE_BUILD_TYPE=Release", "-DOCT_WITH_LLAMA=OFF"])
+        cfg = run(["cmake", "-B", "build", "-S", ".", "-DCMAKE_BUILD_TYPE=Release"])
         if cfg.returncode != 0:
             print(cfg.stdout[-4000:])
             print(cfg.stderr[-4000:], file=sys.stderr)
@@ -88,7 +88,7 @@ def main() -> int:
     summary = json.loads(match.group(0))
     results["tests"] = summary
     print(f"tests: {summary['passed']} passed, {summary['failed']} failed, "
-          f"{summary['skipped']} skipped, {summary['assertions']} assertions")
+          f"{summary['skipped']} UNSUPPORTED_HARDWARE_SKIP, {summary['assertions']} assertions")
     for f in summary["failures"]:
         failures.append(f"test failure: {f}")
 
@@ -97,13 +97,20 @@ def main() -> int:
     names = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
     results["test_names"] = names
 
-    cli = BUILD / "octopus"
+    cli = BUILD / "genisus"
+    if not cli.exists():
+        cli = BUILD / "octopus"
     if cli.exists():
         st = run([str(cli), "selftest"])
         ok = st.stdout.count("[ ok ]")
+        hw_skip = st.stdout.count("[UNSUPPORTED_HARDWARE_SKIP]")
         bad = st.stdout.count("[FAIL]")
-        results["selftest"] = {"modules_ok": ok, "modules_failed": bad}
-        print(f"module self-checks: {ok} ok, {bad} failed")
+        results["selftest"] = {
+            "modules_ok": ok,
+            "modules_unsupported_hardware_skip": hw_skip,
+            "modules_failed": bad,
+        }
+        print(f"module self-checks: {ok} ok, {hw_skip} UNSUPPORTED_HARDWARE_SKIP, {bad} failed")
         if bad:
             failures.append(f"{bad} module self-check(s) failed")
         doctor = run([str(cli), "doctor"])

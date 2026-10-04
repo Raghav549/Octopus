@@ -127,6 +127,21 @@ std::vector<Outcome<T>> par_map(const std::vector<T>& inputs, F fn) {
     return out;
 }
 
+// Simultaneous Occam (parallel CSP channels) + Forth (low-level stack &
+// hardware register file) + Smalltalk (dynamic message-passing actor system)
+// triad coordinator.
+struct TriadExecution {
+    bool                  ok = false;
+    Verdict               occam_verdict;
+    double                forth_stack_top = 0.0;
+    std::vector<double>   forth_registers;
+    std::string           smalltalk_reply;
+    int64_t               channel_messages = 0;
+    Json                  to_json() const;
+};
+
+TriadExecution coordinate_triad(std::string_view forth_program, double seed_value = 3.0);
+
 std::shared_ptr<oct::Module> make_occam_module();
 
 }  // namespace oct::occam

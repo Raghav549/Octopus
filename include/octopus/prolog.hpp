@@ -116,6 +116,26 @@ struct Verification {
 // The single entry point used by the engine: never returns Grounded without a
 // derivation, never returns Refuted without a complete predicate.
 Verification verify(const KnowledgeBase& kb, const TermPtr& claim, const Limits& limits = {});
+Verification verify(const KnowledgeBase& kb, std::string_view claim_text, const Limits& limits = {});
+
+// Deterministic Soundness Guardrail: passes output tokens/responses through
+// strict SLD chronological backtracking logic matrices to prevent factual
+// hallucinations and enforce conservation/soundness invariants.
+struct SoundnessReport {
+    bool                     sound = true;
+    int64_t                  tokens_checked = 0;
+    int64_t                  sld_inferences = 0;
+    int64_t                  grounded_claims = 0;
+    int64_t                  refuted_claims = 0;
+    std::vector<std::string> violations;
+    std::string              proof_digest;
+    Json                     to_json() const;
+};
+
+void load_axiom_core(KnowledgeBase& kb);
+SoundnessReport verify_response_soundness(std::string_view prompt,
+                                          std::string_view response,
+                                          const KnowledgeBase* extra_kb = nullptr);
 
 std::shared_ptr<oct::Module> make_prolog_module();
 

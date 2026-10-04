@@ -234,7 +234,7 @@ OCT_TEST(layers, piet_renders_a_valid_png_and_marks_invalid_states) {
 }
 
 // ---------------------------------------------------------------------------
-// LLM host: honest capability reporting
+// LLM host: honest capability reporting & hardware-skip enforcement
 // ---------------------------------------------------------------------------
 OCT_TEST(layers, llm_host_reports_what_it_can_and_cannot_do) {
     llm::Host host;
@@ -242,31 +242,28 @@ OCT_TEST(layers, llm_host_reports_what_it_can_and_cannot_do) {
     OCT_NOTE("backend=" << b.to_json().str());
     OCT_CHECK(!b.name.empty());
     OCT_CHECK(!b.honesty.empty());
-    // In a build without llama.cpp the host must say so rather than pretend.
+    // In a build without llama.cpp the host must flag UNSUPPORTED_HARDWARE_SKIP
+    // and never fall back to a C++ stub.
     if (!b.compiled) {
         OCT_CHECK(!b.available);
-        OCT_CHECK(b.stub);
+        OCT_CHECK(b.hardware_skipped);
+        OCT_CHECK(b.name == "UNSUPPORTED_HARDWARE_SKIP");
     }
 
-    // A missing model is refused outright: even the stub needs real metadata.
-    Status missing = host.load("/nonexistent/model.gguf", true);
+    // A missing model is refused outright.
+    Status missing = host.load("/nonexistent/model.gguf");
     OCT_CHECK(!missing.is_ok());
 
-    // With a real (vocabulary) GGUF and the stub explicitly allowed, the host
-    // loads metadata-only and labels every answer as not-model-inference.
     const char* fixture = "third_party/llama.cpp/models/ggml-vocab-gpt-2.gguf";
     if (!std::ifstream(fixture).good()) OCT_SKIP("vocabulary fixture not present");
-    Status stub = host.load(fixture, true);
-    OCT_CHECK(host.loaded());
-    if (host.loaded()) {
-        llm::GenerateParams p;
-        p.max_tokens = 8;
-        auto text = host.generate("hello", p);
-        OCT_CHECK(bool(text));
-        if (text) {
-            OCT_CHECK(text->find("stub") != std::string::npos);
-            OCT_CHECK(text->find("not model inference") != std::string::npos);
-        }
+    auto facts = host.inspect(fixture);
+    OCT_CHECK(bool(facts));
+    Status ld = host.load(fixture);
+    if (!b.compiled) {
+        OCT_CHECK(ld.is_hardware_skip());
+        auto text = host.generate("hello", llm::GenerateParams{8});
+        OCT_CHECK(!text);
+        OCT_CHECK(text.status.is_hardware_skip());
     }
 }
 

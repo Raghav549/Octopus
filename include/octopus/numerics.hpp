@@ -1,14 +1,14 @@
-// Octopus Hybrid AI Engine -- numerical kernel layer.
+// Octopus Hybrid AI Engine -- Fortran 2023 Absolute Physics Core interface.
 //
-// Contract (docs/NUMERICS.md): every kernel declares its method, units,
-// parameters, tolerances and validation reference; every run returns
-// diagnostics (residual / conservation error) alongside the data. Kernels are
-// pure: same spec + same backend => bitwise-stable results on a given machine.
+// FORCED MULTI-LANGUAGE BINDING REGIME:
+// Every numerical kernel (fluid dynamics, Kepler/N-body gravity, elliptic &
+// parabolic PDEs, thermodynamics, linear systems, covariant tensor matrix
+// fields) is bound strictly to the Fortran 2023 ISO_C_BINDING execution core
+// (src/fortran/octopus_kernels.f90). C++ reference logic replacements are
+// strictly banned. When a Fortran compiler (gfortran/lfortran) is absent on
+// the compilation host, live execution blocks report UNSUPPORTED_HARDWARE_SKIP
+// rather than downscaling to standard C++ routines.
 //
-// The C++ reference implementation is always present. The Fortran 2018 backend
-// (src/fortran/octopus_kernels.f90) is used when a compiler was available at
-// configure time; the CLI reports which backend answered, and never pretends
-// Fortran ran when it did not.
 // SPDX-License-Identifier: MIT
 #pragma once
 
@@ -20,7 +20,8 @@
 
 namespace oct::numerics {
 
-enum class Backend : uint8_t { CxxLd = 0, Fortran = 1 };
+// Only the native Fortran 2023 backend is permitted; C++ fallback is banned.
+enum class Backend : uint8_t { Fortran = 1 };
 
 const char* backend_name(Backend b) noexcept;
 
@@ -31,7 +32,7 @@ struct ProblemSpec {
     double                              t_end = 1.0;
     int64_t                             steps = 0;      // 0 => solver default
     std::string                         method;         // "" => solver default
-    Backend                             backend = Backend::CxxLd;
+    Backend                             backend = Backend::Fortran;
     bool                                collect_history = false;
 
     double get(std::string_view k, double dflt) const {
@@ -70,30 +71,30 @@ struct Result {
     Diagnostics              diag;
     ProblemSpec              spec;
     std::string              fingerprint;    // SHA-256 over spec+method+backend
+    bool                     hardware_skipped = false;
+    Status                   status = Status::ok();
 
     Json   to_json(bool include_data = false) const;
     Array  as_array() const;
 };
 
-// Validation is the only thing allowed to say "correct": it compares against an
-// independently-derived reference (analytic solution, manufactured solution, or
-// a cross-backend run) and against the declared tolerance.
 struct Validation {
     bool        reference_ok = false;
     bool        tol_ok = false;
     double      max_abs_error = 0.0;
     double      rel_l2_error = 0.0;
     double      tolerance = 0.0;
-    std::string reference;                  // "analytic", "exact-riemann", ...
+    std::string reference;
     bool        conservation_ok = false;
     double      conservation_error = 0.0;
     bool        order_ok = false;
     double      measured_order = 0.0;
     double      expected_order = 0.0;
-    bool        divergence_ok = true;       // fluid kernels only
+    bool        divergence_ok = true;
     double      max_divergence = 0.0;
+    bool        hardware_skipped = false;
     std::string notes;
-    std::vector<std::pair<std::string, double>> metrics;   // extra evidence
+    std::vector<std::pair<std::string, double>> metrics;
 
     void set_metric(std::string name, double v) { metrics.emplace_back(std::move(name), v); }
     double metric(std::string_view name, double dflt = 0.0) const {
@@ -101,7 +102,7 @@ struct Validation {
         return dflt;
     }
 
-    bool accepted() const { return reference_ok && tol_ok && conservation_ok; }
+    bool accepted() const { return !hardware_skipped && reference_ok && tol_ok && conservation_ok; }
     Json to_json() const;
 };
 
@@ -114,9 +115,6 @@ public:
     virtual std::vector<std::pair<std::string, std::string>> parameters() const = 0;
     virtual Result run(const ProblemSpec& spec) const = 0;
     virtual Validation validate(const ProblemSpec& spec) const = 0;
-    // Canonical parameters (including the tolerance) under which this kernel's
-    // validation case is meaningful. An empty spec means "kernel defaults";
-    // callers that need a self-contained check use this instead of guessing.
     virtual ProblemSpec validation_spec() const {
         ProblemSpec s;
         s.kernel = name();
@@ -140,36 +138,28 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Fortran bridge (raw C ABI exported by the Fortran module; see the .f90 file).
-// Returns false when the Fortran backend is not linked in.
+// Fortran 2023 C ABI bridge (linked from octopus_kernels.f90 or fortran_hw_skip.cpp)
 // ---------------------------------------------------------------------------
 namespace fortran_bridge {
+inline constexpr int kErrUnsupportedHardwareSkip = -99;
 bool available();
 const char* compiler_id();
-extern "C" {
-// Each returns 0 on success, non-zero on Fortran-side error.
-}
+Status skip_status(std::string_view kernel_name);
 }  // namespace fortran_bridge
 
 // ---------------------------------------------------------------------------
-// Linear algebra helpers (used by APL ⌹, Least squares, covariance, PCA).
+// Linear algebra utilities (used by APL ⌹ domino matrix division).
 // ---------------------------------------------------------------------------
 namespace linalg {
-// Solve A x = b for square A (n x n, row-major) via LU with partial pivoting.
-// Returns residual ||Ax-b||_inf / (||A||_inf ||x||_inf + tiny).
 Outcome<std::vector<double>> solve(std::vector<double> A, std::vector<double> b, int64_t n,
                                    double* residual_out = nullptr);
-// Conjugate gradient for SPD systems; reports iterations and true residual.
 Outcome<std::vector<double>> cg(const std::vector<double>& A, const std::vector<double>& b,
                                 int64_t n, double tol, int64_t max_iter,
                                 int64_t* iters_out, double* residual_out);
 std::vector<double> matmul(const std::vector<double>& A, const std::vector<double>& B,
                            int64_t n, int64_t k, int64_t m);
 double inf_norm(const std::vector<double>& v);
-// Exact 1-norm condition number via n LU back-substitutions (O(n^3)).
 double condition_1norm(const std::vector<double>& A, int64_t n);
-// Cheap 1-norm condition *estimate* (Hager/Higham style); prefer the exact one
-// whenever the matrix is small, and always report which was used.
 double condition_estimate(const std::vector<double>& A, int64_t n);
 }  // namespace linalg
 

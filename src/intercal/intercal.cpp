@@ -169,6 +169,121 @@ Json AuditChain::to_json() const {
     return j;
 }
 
+uint16_t mingle_u16(uint8_t a, uint8_t b) noexcept {
+    uint16_t out = 0;
+    for (int bit = 0; bit < 8; ++bit) {
+        const uint16_t ba = (a >> bit) & 1u;
+        const uint16_t bb = (b >> bit) & 1u;
+        out |= static_cast<uint16_t>((ba << (2 * bit + 1)) | (bb << (2 * bit)));
+    }
+    return out;
+}
+
+void unmingle_u16(uint16_t m, uint8_t* a_out, uint8_t* b_out) noexcept {
+    uint8_t a = 0, b = 0;
+    for (int bit = 0; bit < 8; ++bit) {
+        a |= static_cast<uint8_t>(((m >> (2 * bit + 1)) & 1u) << bit);
+        b |= static_cast<uint8_t>(((m >> (2 * bit)) & 1u) << bit);
+    }
+    if (a_out) *a_out = a;
+    if (b_out) *b_out = b;
+}
+
+uint16_t select_u16(uint16_t a, uint16_t mask) noexcept {
+    uint16_t out = 0;
+    uint16_t shift = 0;
+    for (int bit = 0; bit < 16; ++bit) {
+        if ((mask >> bit) & 1u) {
+            out |= static_cast<uint16_t>(((a >> bit) & 1u) << shift);
+            ++shift;
+        }
+    }
+    return out;
+}
+
+Json ShieldEnvelope::to_json() const {
+    Json j;
+    j.begin_object();
+    j.field("module_id", module_id);
+    j.field("envelope_bytes", int64_t(envelope_blob.size()));
+    j.field("intercal_select_signature", int64_t(intercal_select_signature));
+    j.key("audit_link");
+    j.raw_json(audit_link.to_json().str());
+    j.end_object();
+    return j;
+}
+
+ShieldEnvelope seal_code_structure(std::string_view module_id,
+                                   std::string_view code_structure,
+                                   std::string_view key,
+                                   AuditChain* chain) {
+    // 1. INTERCAL mingle pass: pair each plaintext byte with key-derived parity byte.
+    std::string mingled;
+    mingled.reserve(code_structure.size() * 2);
+    uint16_t sig_acc = 0xACE1u;
+    for (size_t i = 0; i < code_structure.size(); ++i) {
+        const uint8_t a = static_cast<uint8_t>(code_structure[i]);
+        const uint8_t b = static_cast<uint8_t>(
+            key.empty() ? (i * 131u + 17u) : (uint8_t(key[i % key.size()]) ^ uint8_t(i * 31u)));
+        const uint16_t m = mingle_u16(a, b);
+        mingled.push_back(static_cast<char>((m >> 8) & 0xFFu));
+        mingled.push_back(static_cast<char>(m & 0xFFu));
+        sig_acc = static_cast<uint16_t>(sig_acc ^ select_u16(m, 0xAAAAu));
+    }
+
+    ShieldEnvelope env;
+    env.module_id = std::string(module_id);
+    env.intercal_select_signature = sig_acc;
+    env.envelope_blob = encode(mingled, std::string(key));
+    if (chain) {
+        env.audit_link = chain->append("shield.seal:" + env.module_id, env.envelope_blob);
+    } else {
+        AuditChain local_chain;
+        env.audit_link = local_chain.append("shield.seal:" + env.module_id, env.envelope_blob);
+    }
+    return env;
+}
+
+Outcome<std::string> unseal_code_structure(const ShieldEnvelope& env,
+                                           std::string_view key,
+                                           const AuditChain* chain) {
+    if (chain && !chain->verify()) {
+        return Status::invalid("intercal shield: hash-linked audit chain verification failed");
+    }
+    const std::string expected_payload_hash = hash::sha256_hex(env.envelope_blob);
+    if (env.audit_link.payload_hash != expected_payload_hash) {
+        return Status::invalid("intercal shield: audit link payload hash mismatch");
+    }
+    auto dec = decode(env.envelope_blob, std::string(key));
+    if (!dec.ok()) return dec.status;
+    const std::string& mingled = *dec;
+    if (mingled.size() % 2 != 0) {
+        return Status::invalid("intercal shield: corrupted mingle stream length");
+    }
+    std::string out;
+    out.reserve(mingled.size() / 2);
+    uint16_t sig_acc = 0xACE1u;
+    for (size_t i = 0; i < mingled.size(); i += 2) {
+        const uint16_t hi = static_cast<uint8_t>(mingled[i]);
+        const uint16_t lo = static_cast<uint8_t>(mingled[i + 1]);
+        const uint16_t m = static_cast<uint16_t>((hi << 8) | lo);
+        uint8_t a = 0, b = 0;
+        unmingle_u16(m, &a, &b);
+        const size_t idx = i / 2;
+        const uint8_t expected_b = static_cast<uint8_t>(
+            key.empty() ? (idx * 131u + 17u) : (uint8_t(key[idx % key.size()]) ^ uint8_t(idx * 31u)));
+        if (b != expected_b) {
+            return Status::invalid("intercal shield: mingle parity bit check failed");
+        }
+        sig_acc = static_cast<uint16_t>(sig_acc ^ select_u16(m, 0xAAAAu));
+        out.push_back(static_cast<char>(a));
+    }
+    if (sig_acc != env.intercal_select_signature) {
+        return Status::invalid("intercal shield: select signature mismatch");
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Module wrapper
 // ---------------------------------------------------------------------------

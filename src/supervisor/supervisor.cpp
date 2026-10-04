@@ -168,6 +168,49 @@ Json Supervisor::report() const {
     return j;
 }
 
+smalltalk::ActorSystem::LiveHealReport Supervisor::heal_actor_exception(
+    smalltalk::ActorSystem& actors,
+    lisp::Interp& interp,
+    prolog::KnowledgeBase& kb,
+    const std::string& actor_name,
+    const std::string& selector,
+    const smalltalk::Args& args,
+    const std::string& lisp_symbol,
+    const std::string& lisp_patch_expr,
+    const std::string& prolog_invariant) {
+    actors.attach_autonomous_watchdog(&interp, &kb);
+    smalltalk::ActorSystem::LiveHealRule rule;
+    rule.lisp_symbol = lisp_symbol;
+    rule.lisp_patch_expr = lisp_patch_expr;
+    rule.prolog_invariant = prolog_invariant;
+    actors.register_live_heal_rule(actor_name, std::move(rule));
+
+    smalltalk::ActorSystem::LiveHealReport rep;
+    const Clock::time_point t0 = Clock::now();
+    Outcome<std::string> res = actors.send_autonomous(actor_name, selector, args, &rep);
+    const double elapsed = seconds_since(t0);
+
+    OutcomeRecord rec;
+    rec.seq = ++seq_;
+    rec.check = "autonomous-watchdog:" + actor_name;
+    rec.healthy = res.ok() && rep.recovered_live;
+    rec.detail = "fault=" + rep.fault_message + " lisp_gen=" +
+                 std::to_string(rep.lisp_generation_after) +
+                 " prolog=" + rep.prolog_verdict + " reply=" + rep.healed_reply;
+    rec.seconds = elapsed;
+    rec.action = rep.lisp_rewritten ? Action::Restart : Action::None;
+    rec.when = iso8601_now();
+    history_.push_back(rec);
+
+    audit_.append(rec.healthy ? "watchdog-healed" : "watchdog-failed",
+                  actor_name + "|" + rep.lisp_patch_sha256 + "|" + rep.prolog_verdict);
+    if (rep.lisp_rewritten) {
+        ++restarts_;
+        ++generation_;
+    }
+    return rep;
+}
+
 // ---------------------------------------------------------------------------
 // Module wrapper
 // ---------------------------------------------------------------------------
@@ -210,7 +253,7 @@ public:
         sup.add_check(Check{"stable", []() -> Status { return Status::ok(); }});
         sup.add_check(Check{"slow", []() -> Status {
                                 volatile double x = 0.0;
-                                for (int i = 0; i < 2000000; ++i) x += double(i) * 0.5;
+                                for (int i = 0; i < 2000000; ++i) x = x + double(i) * 0.5;
                                 return x > 0 ? Status::ok() : Status::invalid("unreachable");
                             },
                             0.000001, Severity::Warn});   // deliberately impossible deadline

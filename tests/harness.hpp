@@ -130,3 +130,4 @@ void set_capabilities(bool llama_linked, bool fortran_linked);
     } while (0)
 
 #define OCT_SKIP(REASON) throw ::octest::SkipTest{REASON}
+#define OCT_HARDWARE_SKIP(REASON) throw ::octest::SkipTest{std::string("UNSUPPORTED_HARDWARE_SKIP: ") + (REASON)}
